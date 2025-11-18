@@ -1,0 +1,13 @@
+# build products
+/build/
+/AMLDigitalFPV
+
+# editor cruft
+*.swp
+*.swo
+*~
+.vscode
+
+# dependency caches
+.cache/
+.ccls-cache/
