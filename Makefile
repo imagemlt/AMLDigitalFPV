@@ -28,8 +28,8 @@ LDFLAGS = --sysroot=$(SYSROOT) $(LIBRARIES) -Wl,--unresolved-symbols=ignore-all
 # 库链接
 LIBS = -lgstreamer-1.0 -lgstapp-1.0 -lgobject-2.0 -lglib-2.0 -lfmt -lspdlog -lamcodec
 
-# 源文件
-CXX_SOURCES = $(SRC_DIR)/main.cpp $(SRC_DIR)/gstrtpreceiver.cpp
+# 源文件（header-only 的 scheduling_helper.hpp 无需列在这里）
+CXX_SOURCES = $(SRC_DIR)/main.cpp $(SRC_DIR)/gstrtpreceiver.cpp $(SRC_DIR)/spdlog_wrapper.cpp
 C_SOURCES = $(SRC_DIR)/util.c $(SRC_DIR)/aml.c
 
 # 目标文件

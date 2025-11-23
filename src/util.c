@@ -82,3 +82,18 @@ uint64_t get_time_ms()
   }
   return spec.tv_sec * 1000 + spec.tv_nsec / 1e6;
 }
+
+void write_sysfs(const char *path, const char *val)
+{
+  FILE *f = fopen(path, "w");
+  if (!f)
+  {
+    perror(path);
+    return;
+  }
+  if (fputs(val, f) < 0)
+  {
+    perror(path);
+  }
+  fclose(f);
+}

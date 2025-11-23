@@ -19,6 +19,7 @@ extern "C"
 #include <linux/videodev2.h>
 
 #include "util.h"
+#include "spdlog_wrapper.h"
 
 #define SYNC_OUTSIDE 0x02
 #define UCODE_IP_ONLY_PARAM 0x08

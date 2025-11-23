@@ -2,7 +2,7 @@
 
 // #include <codec.h>
 #include "gstrtpreceiver.h"
-
+#include "scheduling_helper.hpp"
 #include "spdlog/spdlog.h"
 #include "concurrentqueue/blockingconcurrentqueue.h"
 #include <csignal>
@@ -64,7 +64,7 @@ void sig_handler(int signum)
 
 int main(int argc, char *argv[])
 {
-    //spdlog::set_level(spdlog::level::warn);
+    spdlog::set_level(spdlog::level::info);
 
     spdlog::info("Starting GST RTP Receiver... Daivide");
     signal(SIGSEGV, signal_handler);
@@ -88,6 +88,8 @@ int main(int argc, char *argv[])
                                     {
             spdlog::info("decoding thread start");
             
+            SchedulingHelper::set_thread_params_max_realtime("DecodeThread", SchedulingHelper::PRIORITY_REALTIME_MID);
+
             while (decoding_active || decode_queue.size_approx() > 0) {
                 std::shared_ptr<std::vector<uint8_t>> frame;
                 decode_queue.wait_dequeue(frame);
@@ -132,7 +134,7 @@ int main(int argc, char *argv[])
             static bool first = false;
             if (first)
             {
-                // SchedulingHelper::set_thread_params_max_realtime("DisplayThread", SchedulingHelper::PRIORITY_REALTIME_LOW);
+                SchedulingHelper::set_thread_params_max_realtime("GstThread", SchedulingHelper::PRIORITY_REALTIME_LOW);
                 first = false;
             }
             bytes_received += frame->size();
@@ -140,11 +142,13 @@ int main(int argc, char *argv[])
             decode_queue.enqueue(frame);
             const auto depth = decode_queue.size_approx();
             const auto now_ms = monotonic_ms_main();
-            if (depth > 0) {
+            if (depth > 0)
+            {
                 spdlog::debug("[enqueue] frame={} bytes queue_depth={}", frame->size(), depth);
             }
             uint64_t expected = last_queue_log_ms.load();
-            if (now_ms - expected >= 1000 && last_queue_log_ms.compare_exchange_strong(expected, now_ms)) {
+            if (now_ms - expected >= 1000 && last_queue_log_ms.compare_exchange_strong(expected, now_ms))
+            {
                 spdlog::debug("[queue] depth={} bytes_received={} frame_count={}", depth, bytes_received, frame_count);
             }
             // osd_publish_uint_fact("gstreamer.received_bytes", NULL, 0, frame->size());

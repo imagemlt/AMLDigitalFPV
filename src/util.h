@@ -32,6 +32,7 @@ extern "C"
     bool has_fast_aes(void);
     uint64_t get_time_ms();
     void measure_latency_breakdown();
+    void write_sysfs(const char *path, const char *val);
 
 #ifdef __cplusplus
 }

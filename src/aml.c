@@ -26,10 +26,12 @@ static int videoFd = -1;
 static volatile bool done = false;
 void *pkt_buf = NULL;
 size_t pkt_buf_size = 0;
+static uint64_t last_pts_us = 0;
 
 void *aml_display_thread(void *unused)
 {
   // Track whether we were skipping frames in the previous iteration
+  set_priority("DisplayThread", 35);
   bool backlog_active = false;
   int count = 0;
   while (!done)
@@ -44,7 +46,7 @@ void *aml_display_thread(void *unused)
         usleep(500);
         continue;
       }
-      fprintf(stderr, "VIDIOC_DQBUF failed: %d\n", errno);
+      spdlog_error("VIDIOC_DQBUF failed: %d", errno);
       break;
     }
 
@@ -61,24 +63,24 @@ void *aml_display_thread(void *unused)
           backlog_active = false;
           break;
         }
-        fprintf(stderr, "VIDIOC_DQBUF (drain) failed: %d\n", errno);
+        spdlog_error("VIDIOC_DQBUF (drain) failed: %d", errno);
         if (ioctl(videoFd, VIDIOC_QBUF, &latest) < 0)
         {
-          fprintf(stderr, "VIDIOC_QBUF failed while recovering: %d\n", errno);
+          spdlog_error("VIDIOC_QBUF failed while recovering: %d", errno);
         }
         return NULL;
       }
       // Earlier frame becomes obsolete, requeue immediately.
       {
         uint64_t now_ms = get_time_ms();
-        fprintf(stdout,
-                "[%llu ms] display_thread: backlog detected, dropping idx=%u\n",
-                (unsigned long long)now_ms, latest.index);
+        spdlog_info(
+            "[%llu ms] display_thread: backlog detected, dropping idx=%u",
+            (unsigned long long)now_ms, latest.index);
         fflush(stdout);
       }
       if (ioctl(videoFd, VIDIOC_QBUF, &latest) < 0)
       {
-        fprintf(stderr, "VIDIOC_QBUF failed while draining: %d\n", errno);
+        spdlog_error("VIDIOC_QBUF failed while draining: %d", errno);
         ioctl(videoFd, VIDIOC_QBUF, &candidate);
         return NULL;
       }
@@ -90,8 +92,8 @@ void *aml_display_thread(void *unused)
     if (drained > 0)
     {
       backlog_active = true;
-      fprintf(stdout, "[%llu ms] display_thread: skipped %d stale frame(s), displaying idx=%u\n",
-              (unsigned long long)get_time_ms(), drained, latest.index);
+      spdlog_info("[%llu ms] display_thread: skipped %d stale frame(s), displaying idx=%u",
+                  (unsigned long long)get_time_ms(), drained, latest.index);
       fflush(stdout);
     }
     else
@@ -99,19 +101,20 @@ void *aml_display_thread(void *unused)
       backlog_active = false;
     }
 
-    /*
-     fprintf(stdout, "[%llu ms] display_thread: skipped %d stale frame(s), displaying idx=%u, timestamp=%ld.%06ld Timecode: %02d:%02d:%02d:%02d memory %d\n",
-             (unsigned long long)get_time_ms(), drained, latest.index, latest.timestamp.tv_sec, latest.timestamp.tv_usec, latest.timecode.hours, latest.timecode.minutes, latest.timecode.seconds, latest.timecode.frames, latest.memory);
-     fflush(stdout);
-     */
+    if (count % 60 == 0)
+    {
+      spdlog_info("[%llu ms] display_thread: skipped %d stale frame(s), displaying idx=%u, timestamp=%ld.%06ld Timecode: %02d:%02d:%02d:%02d memory %d",
+                  (unsigned long long)get_time_ms(), drained, latest.index, latest.timestamp.tv_sec, latest.timestamp.tv_usec, latest.timecode.hours, latest.timecode.minutes, latest.timecode.seconds, latest.timecode.frames, latest.memory);
+      fflush(stdout);
+    }
     if (ioctl(videoFd, VIDIOC_QBUF, &latest) < 0)
     {
-      fprintf(stderr, "VIDIOC_QBUF failed: %d\n", errno);
+      spdlog_error("VIDIOC_QBUF failed: %d", errno);
       break;
     }
     count++;
   }
-  printf("Display thread terminated\n");
+  spdlog_info("Display thread terminated");
   return NULL;
 }
 
@@ -124,19 +127,25 @@ int aml_setup(int videoFormat, int width, int height, int redrawRate, void *cont
   codecParam.has_video = 1;
   codecParam.noblock = 1;
   codecParam.stream_type = STREAM_TYPE_ES_VIDEO;
+  codecParam.stream_type = STREAM_TYPE_FRAME;
   codecParam.am_sysinfo.param = 0;
 
-  system("echo 0 > /sys/class/video/disable_video");
-  system("echo 1 >/sys/class/graphics/fb0/blank");
+  // system("echo 0 > /sys/class/video/disable_video");
+  write_sysfs("/sys/class/video/disable_video", "0\n");
+  // system("cat /dev/zero >/dev/fb0");
+  // write_sysfs("/sys/class/graphics/fb0/blank", "0\n");
 
+  // minimal vfm map
+  // system("echo 'add vdec-map-0 vdec.h265.00 amvideo' >/sys/class/vfm/map");
   // #ifdef STREAM_TYPE_FRAME
   codecParam.dec_mode = STREAM_TYPE_FRAME;
-  printf("Using FRAME mode\n");
+  spdlog_info("Using FRAME mode");
   // #endif
 
   // #ifdef FRAME_BASE_PATH_AMLVIDEO_AMVIDEO
-  printf("Using video path: %d\n", FRAME_BASE_PATH_AMLVIDEO_AMVIDEO);
+  spdlog_info("Using video path: %d", FRAME_BASE_PATH_AMLVIDEO_AMVIDEO);
   codecParam.video_path = FRAME_BASE_PATH_AMLVIDEO_AMVIDEO;
+  // codecParam.video_path = FRAME_BASE_PATH_AMVIDEO;
 
   // #endif
 
@@ -177,9 +186,9 @@ int aml_setup(int videoFormat, int width, int height, int redrawRate, void *cont
       codecParam.config = NULL;
       codecParam.config_len = 0;
     }
-    printf("hevc special low latency flag enabled!!!\n");
-    printf(low_latency_cfg);
-    printf(" \n===\n");
+    spdlog_info("hevc special low latency flag enabled: %s", low_latency_cfg);
+    // printf(low_latency_cfg);
+
     codecParam.config = strdup(low_latency_cfg);
     if (codecParam.config)
     {
@@ -187,9 +196,8 @@ int aml_setup(int videoFormat, int width, int height, int redrawRate, void *cont
     }
     else
     {
-      fprintf(stderr, "Failed to allocate low latency config string\n");
+      spdlog_error("Failed to allocate low latency config string");
     }
-    printf("CaoCaoCao!!!!\n");
 #ifdef CODEC_TAG_AV1
   }
   else if (videoFormat == VIDEO_FORMAT_MASK_AV1)
@@ -200,10 +208,9 @@ int aml_setup(int videoFormat, int width, int height, int redrawRate, void *cont
   }
   else
   {
-    printf("Video format not supported\n");
+    spdlog_error("Video format not supported");
     return -1;
   }
-  printf("try codec init !!!!!\n");
 
   codecParam.am_sysinfo.width = width;
   codecParam.am_sysinfo.height = height;
@@ -212,45 +219,65 @@ int aml_setup(int videoFormat, int width, int height, int redrawRate, void *cont
 
   codecParam.vbuf_size = 1920 * 1080 * 1;
   int ret;
-  printf("try codec init !!!!!\n");
+
   if ((ret = codec_init(&codecParam)) != 0)
   {
-    fprintf(stderr, "codec_init error: %d\n", ret);
+    spdlog_error("codec_init error: %x", ret);
     return -2;
   }
-  printf("try codec init !!!!!\n");
 
   if ((ret = codec_set_freerun_mode(&codecParam, 1)) != 0)
   {
-    fprintf(stderr, "Can't set Freerun mode: %x\n", ret);
+    spdlog_error("Can't set Freerun mode: %x", ret);
     return -2;
   }
 
   if ((ret = codec_set_syncenable(&codecParam, 0)) != 0)
   {
-    fprintf(stderr, "Can't set syncenable: %x\n", ret);
+    spdlog_error("Can't set syncenable: %x", ret);
     return -2;
   }
 
   if ((ret = codec_set_video_delay_limited_ms(&codecParam, 0)) != 0)
   {
-    fprintf(stderr, "Can't set video delay limited ms: %x\n", ret);
+    spdlog_error("Can't set video delay limited ms: %x", ret);
     return -2;
   }
 
   if ((ret = codec_disalbe_slowsync(&codecParam, 1)) != 0)
   {
-    fprintf(stderr, "Can't set disable slowsync: %x\n", ret);
+    spdlog_error("Can't set disable slowsync: %x\n", ret);
     return -2;
   }
 
   if ((ret = codec_set_cntl_avthresh(&codecParam, 0)) != 0)
   {
-    fprintf(stderr, "Can't set cntl mode: %x\n", ret);
+    spdlog_error("Can't set cntl mode: %x\n", ret);
     return -2;
   }
 
-  printf("prepare VFM MAP\n");
+  // sysfs tuning
+  write_sysfs("/sys/class/video/video_delay_val", "0\n");
+  write_sysfs("/sys/class/video/vsync_pts_inc_upint", "2000\n"); // 可按需要再调
+  write_sysfs("/sys/class/video/show_first_frame_nosync", "1\n");
+  write_sysfs("/sys/class/video/slowsync_repeat_enable", "0\n");
+  write_sysfs("/sys/class/video/vframe_walk_delay", "0\n");
+  write_sysfs("/sys/class/video/last_required_total_delay", "0\n");
+  /* 如果内核带自定义补丁 */
+  write_sysfs("/sys/class/video/hack_novsync", "1\n");
+  /* 降低缩放负载（画质下降） */
+  write_sysfs("/sys/class/video/hscaler_8tap_en", "0\n");
+  write_sysfs("/sys/class/video/pre_hscaler_ntap_en", "0\n");
+  write_sysfs("/sys/class/video/pre_vscaler_ntap_en", "0\n");
+  write_sysfs("/sys/class/video/pip_pre_hscaler_ntap_en", "0\n");
+
+  /* HDMI /sys/class/amhdmitx/amhdmitx0/ */
+  write_sysfs("/sys/class/amhdmitx/amhdmitx0/attr", "444\n"); // 或 "rgb"
+  write_sysfs("/sys/class/amhdmitx/amhdmitx0/frac_rate_policy", "0\n");
+  write_sysfs("/sys/class/amhdmitx/amhdmitx0/allm_mode", "1\n");
+  write_sysfs("/sys/class/amhdmitx/amhdmitx0/contenttype_mode", "1\n");
+
+  spdlog_info("prepare VFM MAP");
   // if ((ret = codec_set_av_threshold(&codecParam, 0)) != 0)
   //{
   //   fprintf(stderr, "Can't set av thresholdc: %x\n", ret);
@@ -263,15 +290,15 @@ int aml_setup(int videoFormat, int width, int height, int redrawRate, void *cont
     *eol = 0;
 
     // If amlvideo is in the pipeline, we must spawn a display thread
-    printf("VFM map: %s\n", vfm_map);
+    spdlog_info("VFM map: %s", vfm_map);
     // if (strstr(vfm_map, "amlvideo"))
     //{
-    printf("Using display thread for amlvideo pipeline\n");
+    spdlog_info("Using display thread for amlvideo pipeline");
 
     videoFd = open("/dev/video10", O_RDONLY | O_NONBLOCK);
     if (videoFd < 0)
     {
-      fprintf(stderr, "Failed to open video device: %d\n", errno);
+      spdlog_error("Failed to open video device: %d", errno);
       return -3;
     }
 
@@ -280,7 +307,7 @@ int aml_setup(int videoFormat, int width, int height, int redrawRate, void *cont
   }
   else
   {
-    printf("Failed to read VFM map\n");
+    spdlog_error("Failed to read VFM map");
   }
 
   ensure_buf_size(&pkt_buf, &pkt_buf_size, INITIAL_DECODER_BUFFER_SIZE);
@@ -314,21 +341,28 @@ int aml_submit_decode_unit(uint8_t *decodeUnit, size_t length)
 
   int written = 0, errCounter = 0, api;
 
-  codec_checkin_pts(&codecParam, get_time_ms());
+  // codec_checkin_pts(&codecParam, get_time_ms() - 8);
+
+  uint64_t pts_us = (get_time_ms() - 8) * 1000ULL;
+  if (pts_us <= last_pts_us)
+    pts_us = last_pts_us + 1000; // 至少 +1ms
+  last_pts_us = pts_us;
+
+  codec_checkin_pts_us64(&codecParam, pts_us);
 
   api = codec_write(&codecParam, decodeUnit, length);
   if (api < 0)
   {
     if (errno != EAGAIN)
     {
-      fprintf(stderr, "codec_write() error: %x %d\n", errno, api);
+      spdlog_error("codec_write() error: %x %d", errno, api);
       codec_reset(&codecParam);
     }
     else
     {
       if (++errCounter == MAX_WRITE_ATTEMPTS)
       {
-        fprintf(stderr, "codec_write() timeout\n");
+        spdlog_error("codec_write() timeout");
       }
       usleep(EAGAIN_SLEEP_TIME);
     }
