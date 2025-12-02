@@ -1,0 +1,20 @@
+[Unit]
+Description=AMLDigitalFPV video receiver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/AMLDigitalFPV
+Restart=on-failure
+RestartSec=5
+# Slightly higher priority for real-time-ish work
+Nice=-5
+# Keep it alive across user sessions
+User=root
+Group=root
+# Prevent kernel from killing us early
+OOMScoreAdjust=0
+
+[Install]
+WantedBy=multi-user.target
