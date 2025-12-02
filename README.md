@@ -26,21 +26,25 @@ AMStreamer 使用 GStreamer + libamcodec 处理视频流，并提供可选的 RT
 
 ## Build Steps / 构建步骤
 
-**EN:**  
+**CMake (recommended) / 推荐：**
+```bash
+cmake -B build -S . \
+  -DCMAKE_SYSROOT=${SYSROOT_PREFIX} \
+  -DCMAKE_C_COMPILER=${CC} \
+  -DCMAKE_CXX_COMPILER=${CXX}
+cmake --build build -j$(nproc)
+# optional install into a staging prefix:
+cmake --install build --prefix=/tmp/stage
+```
+
+**Legacy make / 传统 make：**
 ```bash
 cd /home/imgae/projects/CoreELEC/build.CoreELEC-Amlogic-ng.arm-21/build/AMStreamer
 make            # builds AMLDigitalFPV
 make clean      # removes build/ and the binary
 ```
 
-**CN：**  
-```bash
-cd /home/imgae/projects/CoreELEC/build.CoreELEC-Amlogic-ng.arm-21/build/AMStreamer
-make            # 生成 AMLDigitalFPV
-make clean      # 清理 build/ 目录和生成的二进制
-```
-
-如需调整源文件或编译选项，请编辑根目录 `Makefile`。构建产物位于 `build/`，最终可执行文件 `AMLDigitalFPV` 位于当前目录。
+调整源文件或编译选项可编辑根目录 `CMakeLists.txt` 或 `Makefile`。构建产物位于 `build/`，最终可执行文件 `AMLDigitalFPV` 位于当前目录。
 
 ## Source Layout / 源码结构
 
