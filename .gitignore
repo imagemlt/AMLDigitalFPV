@@ -11,3 +11,11 @@
 # dependency caches
 .cache/
 .ccls-cache/
+
+# CMake/build outputs
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+/Makefile
+/build*/
+.cmake/
