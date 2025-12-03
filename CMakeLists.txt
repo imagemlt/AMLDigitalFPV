@@ -71,6 +71,7 @@ target_link_libraries(AMLDigitalFPV
   spdlog
   amcodec
   ${GSTAPP_LIBRARIES}
+  gstapp-1.0
 )
 
 install(TARGETS AMLDigitalFPV DESTINATION bin)

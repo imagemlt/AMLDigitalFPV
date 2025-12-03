@@ -8,6 +8,11 @@
 #include <csignal>
 #include <execinfo.h>
 #include <thread>
+#include <atomic>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 extern "C"
 {
@@ -17,8 +22,16 @@ extern "C"
 
 using namespace std;
 
+struct CmdOptions {
+    int width = 1920;
+    int height = 1080;
+    int fps = 120;
+    std::string dvr_path; // if empty, auto path
+};
+
 int signal_flag = 0;
 int return_value = 0;
+static CmdOptions g_opts;
 
 std::unique_ptr<GstRtpReceiver>
     receiver;
@@ -64,6 +77,28 @@ void sig_handler(int signum)
 
 int main(int argc, char *argv[])
 {
+    // parse args via getopt: -w width -h height -p fps -s path
+    int opt;
+    while ((opt = getopt(argc, argv, "w:h:p:s:")) != -1) {
+        switch (opt) {
+        case 'w':
+            g_opts.width = std::atoi(optarg);
+            break;
+        case 'h':
+            g_opts.height = std::atoi(optarg);
+            break;
+        case 'p':
+            g_opts.fps = std::atoi(optarg);
+            break;
+        case 's':
+            g_opts.dvr_path = optarg ? std::string(optarg) : "";
+            break;
+        default:
+            // ignore unknown options for now
+            break;
+        }
+    }
+
     spdlog::set_level(spdlog::level::info);
 
     spdlog::info("Starting GST RTP Receiver... Daivide");
@@ -73,9 +108,7 @@ int main(int argc, char *argv[])
     // Initialize AML library
     try
     {
-        // char *addr = "0.0.0.0:5600";
-        //  Create GST RTP Receiver instance
-        aml_setup(0, 1920, 1080, 120, NULL, 0);
+        aml_setup(0, g_opts.width, g_opts.height, g_opts.fps, NULL, 0);
         receiver = std::make_unique<GstRtpReceiver>(5600, VideoCodec::H265);
 
         spdlog::info("GstRtpReceiver instance created.");
@@ -164,7 +197,6 @@ int main(int argc, char *argv[])
 
         spdlog::info("GST RTP Receiver is running. Press Ctrl-C to stop...");
 
-        bool flag = true;
         while (!signal_flag)
         {
             sleep(10);
