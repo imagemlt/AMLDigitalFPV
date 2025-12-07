@@ -118,7 +118,7 @@ void *aml_display_thread(void *unused)
   return NULL;
 }
 
-int aml_setup(int videoFormat, int width, int height, int redrawRate, void *context, int drFlags)
+int aml_setup(int videoFormat, int width, int height, int redrawRate, void *context, int drFlags, int framePath)
 {
   codecParam.handle = -1;
   codecParam.cntl_handle = -1;
@@ -143,10 +143,17 @@ int aml_setup(int videoFormat, int width, int height, int redrawRate, void *cont
   // #endif
 
   // #ifdef FRAME_BASE_PATH_AMLVIDEO_AMVIDEO
-  spdlog_info("Using video path: %d", FRAME_BASE_PATH_AMLVIDEO_AMVIDEO);
-  codecParam.video_path = FRAME_BASE_PATH_AMLVIDEO_AMVIDEO;
-  // codecParam.video_path = FRAME_BASE_PATH_AMVIDEO;
-
+  if (framePath != 1)
+  {
+    spdlog_info("Using video path: %d", FRAME_BASE_PATH_AMLVIDEO_AMVIDEO);
+    codecParam.video_path = FRAME_BASE_PATH_AMLVIDEO_AMVIDEO;
+  }
+  else
+  {
+    spdlog_info("Using video path: %d", FRAME_BASE_PATH_AMVIDEO);
+    // codecParam.video_path = FRAME_BASE_PATH_AMLVIDEO_AMVIDEO;
+    codecParam.video_path = FRAME_BASE_PATH_AMVIDEO;
+  }
   // #endif
 
   if (videoFormat == VIDEO_FORMAT_MASK_H264)

@@ -2,16 +2,20 @@
 
 // #include <codec.h>
 #include "gstrtpreceiver.h"
+#include "dvr_recorder.h"
 #include "scheduling_helper.hpp"
 #include "spdlog/spdlog.h"
 #include "concurrentqueue/blockingconcurrentqueue.h"
 #include <csignal>
 #include <execinfo.h>
+#include <cerrno>
+#include <cstring>
 #include <thread>
 #include <atomic>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <unistd.h>
 
 extern "C"
@@ -22,11 +26,16 @@ extern "C"
 
 using namespace std;
 
-struct CmdOptions {
+constexpr int kDvrControlPort = 5612;
+
+struct CmdOptions
+{
     int width = 1920;
     int height = 1080;
     int fps = 120;
     std::string dvr_path; // if empty, auto path
+    int frame_path = 1;   // 1 presents AMVIDEO, 0 presents AMLVIDEO_AMVIDEO (for amlvideo v4l2 pipeline)
+    int type = 0;         // 0: H265, 1: H264
 };
 
 int signal_flag = 0;
@@ -35,10 +44,13 @@ static CmdOptions g_opts;
 
 std::unique_ptr<GstRtpReceiver>
     receiver;
+std::unique_ptr<DvrRecorder> g_dvr;
 moodycamel::BlockingConcurrentQueue<std::shared_ptr<std::vector<uint8_t>>> decode_queue;
 std::atomic<bool> decoding_active{false};
 std::thread decode_thread;
 std::atomic<uint64_t> last_queue_log_ms{0};
+std::thread dvr_command_thread;
+std::atomic<bool> dvr_command_running{false};
 
 static uint64_t monotonic_ms_main()
 {
@@ -75,12 +87,89 @@ void sig_handler(int signum)
     return_value = signum;
 }
 
+void dvr_command_loop(int port)
+{
+    SchedulingHelper::set_thread_params_max_realtime("DvrCommand", 10);
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0)
+    {
+        spdlog::error("Failed to create DVR control socket");
+        dvr_command_running.store(false);
+        return;
+    }
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons(port);
+
+    if (bind(sock, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0)
+    {
+        spdlog::error("Failed to bind DVR control port {}", port);
+        close(sock);
+        dvr_command_running.store(false);
+        return;
+    }
+
+    spdlog::info("DVR control listening on UDP {}", port);
+
+    while (dvr_command_running.load())
+    {
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(sock, &rfds);
+        timeval tv{};
+        tv.tv_sec = 1;
+        const int ret = select(sock + 1, &rfds, nullptr, nullptr, &tv);
+        if (ret < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            spdlog::warn("DVR control select() failed: {}", strerror(errno));
+            break;
+        }
+        if (ret > 0 && FD_ISSET(sock, &rfds))
+        {
+            char buffer[128];
+            ssize_t len = recvfrom(sock, buffer, sizeof(buffer) - 1, 0, nullptr, nullptr);
+            if (len > 0)
+            {
+                buffer[len] = '\0';
+                std::string payload(buffer);
+                if (payload.find("record=1") != std::string::npos)
+                {
+                    spdlog::info("DVR command: start recording");
+                    if (g_dvr)
+                    {
+                        g_dvr->start_recording();
+                    }
+                }
+                else if (payload.find("record=0") != std::string::npos)
+                {
+                    spdlog::info("DVR command: stop recording");
+                    if (g_dvr)
+                    {
+                        g_dvr->stop_recording();
+                    }
+                }
+            }
+        }
+    }
+
+    close(sock);
+    dvr_command_running.store(false);
+}
+
 int main(int argc, char *argv[])
 {
     // parse args via getopt: -w width -h height -p fps -s path
     int opt;
-    while ((opt = getopt(argc, argv, "w:h:p:s:")) != -1) {
-        switch (opt) {
+    while ((opt = getopt(argc, argv, "w:h:p:s:")) != -1)
+    {
+        switch (opt)
+        {
         case 'w':
             g_opts.width = std::atoi(optarg);
             break;
@@ -92,6 +181,12 @@ int main(int argc, char *argv[])
             break;
         case 's':
             g_opts.dvr_path = optarg ? std::string(optarg) : "";
+            break;
+        case 'f':
+            g_opts.frame_path = std::atoi(optarg);
+            break;
+        case 't':
+            g_opts.type = std::atoi(optarg);
             break;
         default:
             // ignore unknown options for now
@@ -108,10 +203,19 @@ int main(int argc, char *argv[])
     // Initialize AML library
     try
     {
-        aml_setup(0, g_opts.width, g_opts.height, g_opts.fps, NULL, 0);
-        receiver = std::make_unique<GstRtpReceiver>(5600, VideoCodec::H265);
+        aml_setup(g_opts.type, g_opts.width, g_opts.height, g_opts.fps, NULL, 0, g_opts.frame_path);
+        receiver = std::make_unique<GstRtpReceiver>(5600, g_opts.type == 0 ? VideoCodec::H265 : VideoCodec::H264);
 
         spdlog::info("GstRtpReceiver instance created.");
+        g_dvr = std::make_unique<DvrRecorder>();
+        g_dvr->set_video_params(g_opts.width, g_opts.height, g_opts.fps, VideoCodec::H265);
+        if (!g_opts.dvr_path.empty())
+        {
+            g_dvr->set_override_path(g_opts.dvr_path);
+        }
+        dvr_command_running = true;
+        dvr_command_thread = std::thread(dvr_command_loop, kDvrControlPort);
+
         long long bytes_received = 0;
         long long frame_count = 0;
         uint64_t period_start = 0;
@@ -173,6 +277,10 @@ int main(int argc, char *argv[])
             bytes_received += frame->size();
             // spdlog::debug("{}ms Received frame of size {} ", get_time_ms(), frame->size());
             decode_queue.enqueue(frame);
+            if (g_dvr)
+            {
+                g_dvr->enqueue_frame(frame);
+            }
             const auto depth = decode_queue.size_approx();
             const auto now_ms = monotonic_ms_main();
             if (depth > 0)
@@ -214,6 +322,15 @@ int main(int argc, char *argv[])
     if (decode_thread.joinable())
     {
         decode_thread.join();
+    }
+    dvr_command_running = false;
+    if (dvr_command_thread.joinable())
+    {
+        dvr_command_thread.join();
+    }
+    if (g_dvr)
+    {
+        g_dvr->shutdown();
     }
     aml_cleanup();
     return 0;

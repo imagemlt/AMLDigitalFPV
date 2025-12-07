@@ -57,6 +57,7 @@ set(SRC_CPP
   src/main.cpp
   src/gstrtpreceiver.cpp
   src/spdlog_wrapper.cpp
+  src/dvr_recorder.cpp
 )
 set(SRC_C
   src/util.c
