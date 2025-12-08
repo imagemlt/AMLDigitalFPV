@@ -35,6 +35,20 @@ make clean      # 清理 build/ 与可执行文件
 - `CMakeLists.txt` / `Makefile`：构建脚本。
 - `systemd/`：amldigitalfpv.service 单元。
 
+## 运行参数
+`AMLDigitalFPV` 支持以下命令行参数：
+
+| 参数 | 默认值 | 说明 |
+| ---- | ------ | ---- |
+| `-w <width>`  | `1920` | 传递给 `aml_setup` 的期望视频宽度，同时写入录像文件元数据。 |
+| `-h <height>` | `1080` | 期望视频高度。 |
+| `-p <fps>`    | `120`  | 期望帧率，也用于 DVR 计算时间戳。 |
+| `-s <path>`   | *(空)* | 覆盖录像输出位置：指向目录时会自动递增命名；指定 `.mp4` 文件时则写入该文件。未设置则会依次尝试 `/var/media`、`/media`、`/run/media`、`/storage`。 |
+
+录像默认关闭，需要向 UDP 端口 `5612` 发送指令：
+- `record=1`：开始录制。
+- `record=0`：停止录制并关闭文件。
+
 ## 音频 RTP
 在调用 `start_receiving()` 之前执行 `enable_audio_stream(port, 98, "default")` 启用音频；默认认为是 Opus，直接送到 `alsasink`，不做音画同步以降低延迟。
 

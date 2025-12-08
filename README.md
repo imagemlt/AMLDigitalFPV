@@ -35,6 +35,20 @@ Edit `CMakeLists.txt` or `Makefile` to tweak sources/flags. Outputs live in `bui
 - `CMakeLists.txt` / `Makefile`: build scripts.
 - `systemd/`: amldigitalfpv.service unit.
 
+## Runtime Options
+`AMLDigitalFPV` accepts several CLI flags:
+
+| Flag | Default | Description |
+| ---- | ------- | ----------- |
+| `-w <width>`  | `1920` | Expected video width used when calling `aml_setup` and when tagging recorded files. |
+| `-h <height>` | `1080` | Expected video height. |
+| `-p <fps>`    | `120`  | Expected frame rate (also controls DVR timestamp increments). |
+| `-s <path>`   | *(empty)* | Override DVR output location: point to a directory to auto-increment files there, or specify a `.mp4` file for a fixed target. Without this flag the recorder searches `/var/media`, `/media`, `/run/media`, then `/storage`. |
+
+Recording remains off until a UDP command arrives on port `5612`:
+- `record=1` – start writing MP4.
+- `record=0` – stop and close the file.
+
 ## Audio RTP
 Call `enable_audio_stream(port, 98, "default")` before `start_receiving()` to enable RTP audio (assumes Opus). Audio goes to `alsasink` without A/V sync to minimize latency.
 
