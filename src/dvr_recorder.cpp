@@ -1,10 +1,13 @@
 #include "dvr_recorder.h"
 
 #include <cctype>
+#include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <iomanip>
 #include <sstream>
+#include <algorithm>
 
 #include "spdlog/spdlog.h"
 
@@ -20,6 +23,13 @@ constexpr uint32_t kDefaultFrameDuration = 1500; // ~60fps fallback
 
 int64_t clamp_positive(int64_t value) {
     return value < 0 ? 0 : value;
+}
+
+uint64_t monotonic_ms()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
 }
 } // namespace
 
@@ -44,24 +54,34 @@ DvrRecorder::~DvrRecorder()
     }
 }
 
-void DvrRecorder::set_video_params(uint32_t width, uint32_t height, uint32_t fps, VideoCodec codec)
+void DvrRecorder::set_video_params(uint32_t width, uint32_t height, uint32_t fps_hint, VideoCodec codec)
 {
     std::lock_guard<std::mutex> lock(state_mutex_);
     video_width_ = width;
     video_height_ = height;
-    video_fps_ = fps;
+    video_fps_hint_ = fps_hint;
     codec_ = codec;
-    if (fps > 0) {
-        frame_duration_ = std::max(1u, static_cast<uint32_t>(90000 / fps));
-    } else {
-        frame_duration_ = kDefaultFrameDuration;
-    }
+    frame_duration_.store(kDefaultFrameDuration, std::memory_order_relaxed);
 }
 
 void DvrRecorder::set_override_path(const std::string &path)
 {
     std::lock_guard<std::mutex> lock(state_mutex_);
     override_path_ = fs::path(path);
+}
+
+void DvrRecorder::update_frame_rate(double fps)
+{
+    if (fps <= 1.0) {
+        return;
+    }
+    const double raw = 90000.0 / fps;
+    uint32_t duration = static_cast<uint32_t>(raw);
+    if (duration == 0) {
+        duration = kDefaultFrameDuration;
+    }
+    duration = std::clamp<uint32_t>(duration, 375, 90000); // clamp to 240fps..1fps
+    frame_duration_.store(duration, std::memory_order_relaxed);
 }
 
 void DvrRecorder::enqueue_frame(const std::shared_ptr<std::vector<uint8_t>> &frame)
@@ -106,35 +126,102 @@ void DvrRecorder::push_command(const Command &cmd)
 
 void DvrRecorder::worker_loop()
 {
-    SchedulingHelper::set_thread_params_max_realtime("DvrRecorder", 15);
+    SchedulingHelper::set_thread_params_other("DvrRecorder");
     while (true) {
         Command cmd;
         queue_.wait_dequeue(cmd);
 
         switch (cmd.type) {
         case CommandType::Start:
-            open_writer();
+            if (!recording_.load()) {
+                ring_buffer_.clear();
+                reset_warmup_state();
+                recording_.store(true, std::memory_order_relaxed);
+                spdlog::info("DVR warm-up started");
+            }
             break;
         case CommandType::Stop:
-            close_writer();
+            close_writer(true);
+            ring_buffer_.clear();
+            reset_warmup_state();
             break;
         case CommandType::Frame:
-            if (ready_to_write() && cmd.frame) {
-                auto duration = frame_duration_;
-                if (duration == 0) {
-                    duration = kDefaultFrameDuration;
+            if (!cmd.frame) {
+                break;
+            }
+            if (!recording_.load(std::memory_order_relaxed)) {
+                break;
+            }
+
+            if (!warmup_done_.load(std::memory_order_relaxed)) {
+                if (warmup_start_ms_ == 0) {
+                    warmup_start_ms_ = monotonic_ms();
+                    warmup_frame_count_ = 0;
                 }
+                ++warmup_frame_count_;
+                const uint64_t elapsed = monotonic_ms() - warmup_start_ms_;
+                if (elapsed >= 1000 && warmup_frame_count_ > 0) {
+                    const double fps = std::max(1.0,
+                                                std::ceil((warmup_frame_count_ * 1000.0) /
+                                                          static_cast<double>(elapsed)));
+                    if (open_writer(false)) {
+                        update_frame_rate(fps);
+                        warmup_done_.store(true, std::memory_order_relaxed);
+                        warmup_start_ms_ = 0;
+                        warmup_frame_count_ = 0;
+                        spdlog::info("DVR warm-up completed, fps={:.2f}", fps);
+                    } else {
+                        spdlog::error("Failed to open DVR writer after warm-up");
+                        recording_.store(false, std::memory_order_relaxed);
+                        reset_warmup_state();
+                        ring_buffer_.clear();
+                    }
+                }
+                break;
+            }
+
+            ring_buffer_.push(cmd.frame);
+            while (ready_to_write() && warmup_done_.load(std::memory_order_relaxed) && !ring_buffer_.empty()) {
+                auto frame = ring_buffer_.pop();
+                if (!frame)
+                    break;
+                auto duration = frame_duration_.load(std::memory_order_relaxed);
+                if (duration == 0)
+                    duration = kDefaultFrameDuration;
                 const int res = mp4_h26x_write_nal(writer_,
-                                                   cmd.frame->data(),
-                                                   static_cast<int>(cmd.frame->size()),
+                                                   frame->data(),
+                                                   static_cast<int>(frame->size()),
                                                    static_cast<int>(duration));
                 if (!(res == MP4E_STATUS_OK || res == MP4E_STATUS_BAD_ARGUMENTS)) {
                     spdlog::warn("mp4_h26x_write_nal returned {}", res);
+                    stop_requested_.store(true, std::memory_order_relaxed);
+                    break;
+                }
+                if (rotate_requested_.load(std::memory_order_relaxed)) {
+                    rotate_requested_.store(false, std::memory_order_relaxed);
+                    if (!rotate_recording_file()) {
+                        spdlog::error("Failed to rotate DVR file");
+                    }
+                }
+                if (stop_requested_.load(std::memory_order_relaxed)) {
+                    stop_requested_.store(false, std::memory_order_relaxed);
+                    spdlog::error("Stopping DVR due to write failures (disk full?)");
+                    close_writer(true);
+                    ring_buffer_.clear();
+                    reset_warmup_state();
+                    break;
+                } else if (current_file_bytes_.load(std::memory_order_relaxed) >= kMaxFat32Size) {
+                    if (!rotate_recording_file()) {
+                        spdlog::error("Failed to rotate DVR file");
+                    }
                 }
             }
             break;
         case CommandType::Shutdown:
             running_.store(false);
+            close_writer(true);
+            ring_buffer_.clear();
+            reset_warmup_state();
             break;
         }
 
@@ -143,7 +230,7 @@ void DvrRecorder::worker_loop()
         }
     }
 
-    close_writer();
+    close_writer(true);
 }
 
 bool DvrRecorder::ready_to_write() const
@@ -151,25 +238,34 @@ bool DvrRecorder::ready_to_write() const
     return recording_.load() && writer_ready_;
 }
 
-bool DvrRecorder::open_writer()
+bool DvrRecorder::rotate_recording_file()
 {
-    if (recording_) {
+    if (!recording_.load()) {
+        return false;
+    }
+    close_writer(false);
+    return open_writer(false);
+}
+
+bool DvrRecorder::open_writer(bool mark_recording)
+{
+    if (writer_ready_) {
         return true;
     }
 
     uint32_t width = 0;
     uint32_t height = 0;
-    uint32_t fps = 0;
+    uint32_t fps_hint = 0;
     VideoCodec codec = VideoCodec::H265;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         width = video_width_;
         height = video_height_;
-        fps = video_fps_;
+        fps_hint = video_fps_hint_;
         codec = codec_;
     }
-    if (width == 0 || height == 0 || fps == 0) {
-        spdlog::warn("DVR cannot start: invalid video params {}x{} @{}", width, height, fps);
+    if (width == 0 || height == 0) {
+        spdlog::warn("DVR cannot start: invalid video params {}x{}", width, height);
         return false;
     }
 
@@ -187,9 +283,11 @@ bool DvrRecorder::open_writer()
     }
 
     constexpr int kFragmentationMode = 0;
-    MP4E_mux_t *mux = MP4E_open(0, kFragmentationMode, file, file_write_callback);
+    file_ = file;
+    MP4E_mux_tag *mux = MP4E_open(0, kFragmentationMode, this, file_write_callback);
     if (!mux) {
         spdlog::error("MP4E_open failed");
+        file_ = nullptr;
         std::fclose(file);
         return false;
     }
@@ -211,21 +309,32 @@ bool DvrRecorder::open_writer()
                                               codec == VideoCodec::H265)) {
         spdlog::error("mp4_h26x_write_init failed");
         MP4E_close(mux);
+        mux = nullptr;
+        file_ = nullptr;
         std::fclose(file);
         return false;
     }
 
-    file_ = file;
     mux_ = mux;
     writer_ready_ = true;
-    recording_.store(true);
+    current_file_bytes_.store(0, std::memory_order_relaxed);
+    rotate_requested_.store(false, std::memory_order_relaxed);
+    if (mark_recording) {
+        recording_.store(true);
+    }
+    if (fps_hint > 0) {
+        frame_duration_.store(std::max(1u, static_cast<uint32_t>(90000 / fps_hint)), std::memory_order_relaxed);
+    }
     spdlog::info("DVR recording to {}", path_str);
     return true;
 }
 
-void DvrRecorder::close_writer()
+void DvrRecorder::close_writer(bool clear_recording)
 {
-    if (!recording_) {
+    if (!writer_ready_) {
+        if (clear_recording) {
+            recording_.store(false, std::memory_order_relaxed);
+        }
         return;
     }
     writer_ready_ = false;
@@ -240,7 +349,11 @@ void DvrRecorder::close_writer()
         std::fclose(file_);
         file_ = nullptr;
     }
-    recording_.store(false);
+    current_file_bytes_.store(0, std::memory_order_relaxed);
+    rotate_requested_.store(false, std::memory_order_relaxed);
+    if (clear_recording) {
+        recording_.store(false);
+    }
     spdlog::info("DVR stopped");
 }
 
@@ -341,13 +454,31 @@ fs::path DvrRecorder::make_incremental_filename(const fs::path &dir) const
 
 int DvrRecorder::file_write_callback(int64_t offset, const void *buffer, size_t size, void *token)
 {
-    auto *file = static_cast<FILE *>(token);
-    if (!file) {
+    auto *self = static_cast<DvrRecorder *>(token);
+    if (!self || !self->file_) {
         return -1;
     }
-    if (std::fseek(file, clamp_positive(offset), SEEK_SET) != 0) {
+    if (std::fseek(self->file_, clamp_positive(offset), SEEK_SET) != 0) {
         return -1;
     }
-    const size_t written = std::fwrite(buffer, 1, size, file);
-    return written == size ? 0 : -1;
+    const size_t written = std::fwrite(buffer, 1, size, self->file_);
+    if (written != size) {
+        return -1;
+    }
+    const uint64_t new_end = static_cast<uint64_t>(clamp_positive(offset)) + written;
+    uint64_t prev = self->current_file_bytes_.load(std::memory_order_relaxed);
+    while (new_end > prev && !self->current_file_bytes_.compare_exchange_weak(prev, new_end, std::memory_order_relaxed)) {
+        /* retry */
+    }
+    if (new_end >= self->kMaxFat32Size) {
+        self->rotate_requested_.store(true, std::memory_order_relaxed);
+    }
+    return 0;
+}
+
+void DvrRecorder::reset_warmup_state()
+{
+    warmup_done_.store(false, std::memory_order_relaxed);
+    warmup_start_ms_ = 0;
+    warmup_frame_count_ = 0;
 }

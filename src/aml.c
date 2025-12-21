@@ -76,7 +76,6 @@ void *aml_display_thread(void *unused)
         spdlog_info(
             "[%llu ms] display_thread: backlog detected, dropping idx=%u",
             (unsigned long long)now_ms, latest.index);
-        fflush(stdout);
       }
       if (ioctl(videoFd, VIDIOC_QBUF, &latest) < 0)
       {
@@ -94,7 +93,6 @@ void *aml_display_thread(void *unused)
       backlog_active = true;
       spdlog_info("[%llu ms] display_thread: skipped %d stale frame(s), displaying idx=%u",
                   (unsigned long long)get_time_ms(), drained, latest.index);
-      fflush(stdout);
     }
     else
     {
@@ -105,7 +103,6 @@ void *aml_display_thread(void *unused)
     {
       spdlog_info("[%llu ms] display_thread: skipped %d stale frame(s), displaying idx=%u, timestamp=%ld.%06ld Timecode: %02d:%02d:%02d:%02d memory %d",
                   (unsigned long long)get_time_ms(), drained, latest.index, latest.timestamp.tv_sec, latest.timestamp.tv_usec, latest.timecode.hours, latest.timecode.minutes, latest.timecode.seconds, latest.timecode.frames, latest.memory);
-      fflush(stdout);
     }
     if (ioctl(videoFd, VIDIOC_QBUF, &latest) < 0)
     {
@@ -118,7 +115,7 @@ void *aml_display_thread(void *unused)
   return NULL;
 }
 
-int aml_setup(int videoFormat, int width, int height, int redrawRate, void *context, int drFlags, int framePath)
+int aml_setup(int videoFormat, int width, int height, int redrawRate, void *context, int drFlags, int framePath, int streamType)
 {
   codecParam.handle = -1;
   codecParam.cntl_handle = -1;
@@ -126,8 +123,16 @@ int aml_setup(int videoFormat, int width, int height, int redrawRate, void *cont
   codecParam.sub_handle = -1;
   codecParam.has_video = 1;
   codecParam.noblock = 1;
-  codecParam.stream_type = STREAM_TYPE_ES_VIDEO;
-  codecParam.stream_type = STREAM_TYPE_FRAME;
+  if (streamType == 0)
+  {
+    codecParam.stream_type = STREAM_TYPE_ES_VIDEO;
+    spdlog_info("Using ES_VIDEO mode");
+  }
+  else
+  {
+    codecParam.stream_type = STREAM_TYPE_FRAME;
+    spdlog_info("USING FRAME mode");
+  }
   codecParam.am_sysinfo.param = 0;
 
   // system("echo 0 > /sys/class/video/disable_video");
@@ -224,7 +229,7 @@ int aml_setup(int videoFormat, int width, int height, int redrawRate, void *cont
   codecParam.am_sysinfo.rate = 90000 / redrawRate;
   codecParam.am_sysinfo.param = (void *)((size_t)codecParam.am_sysinfo.param | SYNC_OUTSIDE);
 
-  codecParam.vbuf_size = 1920 * 1080 * 1;
+  codecParam.vbuf_size = width * height * 1;
   int ret;
 
   if ((ret = codec_init(&codecParam)) != 0)
@@ -272,6 +277,13 @@ int aml_setup(int videoFormat, int width, int height, int redrawRate, void *cont
   write_sysfs("/sys/class/video/last_required_total_delay", "0\n");
   /* 如果内核带自定义补丁 */
   write_sysfs("/sys/class/video/hack_novsync", "1\n");
+  write_sysfs("/sys/class/video/hold_video", "0\n");
+  write_sysfs("/sys/class/video/freerun_mode", "1\n"); // FREERUN_NODUR
+  write_sysfs("/sys/class/video/show_first_picture", "1\n");
+  write_sysfs("/sys/class/video/enable_hdmi_delay_normal_check", "0\n");
+  write_sysfs("/sys/class/video/hdmin_delay_start", "0\n");
+  write_sysfs("/sys/class/video/hdmin_delay_max_ms", "0\n");
+  write_sysfs("/sys/class/video/free_keep_buffer", "1\n");
   /* 降低缩放负载（画质下降） */
   write_sysfs("/sys/class/video/hscaler_8tap_en", "0\n");
   write_sysfs("/sys/class/video/pre_hscaler_ntap_en", "0\n");
@@ -279,7 +291,7 @@ int aml_setup(int videoFormat, int width, int height, int redrawRate, void *cont
   write_sysfs("/sys/class/video/pip_pre_hscaler_ntap_en", "0\n");
 
   /* HDMI /sys/class/amhdmitx/amhdmitx0/ */
-  write_sysfs("/sys/class/amhdmitx/amhdmitx0/attr", "444\n"); // 或 "rgb"
+  write_sysfs("/sys/class/amhdmitx/amhdmitx0/attr", "rgb\n"); // 或 "rgb"
   write_sysfs("/sys/class/amhdmitx/amhdmitx0/frac_rate_policy", "0\n");
   write_sysfs("/sys/class/amhdmitx/amhdmitx0/allm_mode", "1\n");
   write_sysfs("/sys/class/amhdmitx/amhdmitx0/contenttype_mode", "1\n");

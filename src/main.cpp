@@ -36,6 +36,7 @@ struct CmdOptions
     std::string dvr_path; // if empty, auto path
     int frame_path = 1;   // 1 presents AMVIDEO, 0 presents AMLVIDEO_AMVIDEO (for amlvideo v4l2 pipeline)
     int type = 0;         // 0: H265, 1: H264
+    int stream_type = 0;  // 0: frame, 1: es video
 };
 
 int signal_flag = 0;
@@ -133,7 +134,10 @@ void dvr_command_loop(int port)
         if (ret > 0 && FD_ISSET(sock, &rfds))
         {
             char buffer[128];
-            ssize_t len = recvfrom(sock, buffer, sizeof(buffer) - 1, 0, nullptr, nullptr);
+            sockaddr_in sender{};
+            socklen_t sender_len = sizeof(sender);
+            ssize_t len = recvfrom(sock, buffer, sizeof(buffer) - 1, 0,
+                                   reinterpret_cast<sockaddr *>(&sender), &sender_len);
             if (len > 0)
             {
                 buffer[len] = '\0';
@@ -154,6 +158,12 @@ void dvr_command_loop(int port)
                         g_dvr->stop_recording();
                     }
                 }
+                else if (payload.find("ping=1") != std::string::npos)
+                {
+                    constexpr const char *pong = "pong=1";
+                    sendto(sock, pong, std::strlen(pong), 0,
+                           reinterpret_cast<sockaddr *>(&sender), sender_len);
+                }
             }
         }
     }
@@ -166,7 +176,7 @@ int main(int argc, char *argv[])
 {
     // parse args via getopt: -w width -h height -p fps -s path
     int opt;
-    while ((opt = getopt(argc, argv, "w:h:p:s:")) != -1)
+    while ((opt = getopt(argc, argv, "w:h:p:s:f:t:d:")) != -1)
     {
         switch (opt)
         {
@@ -188,6 +198,9 @@ int main(int argc, char *argv[])
         case 't':
             g_opts.type = std::atoi(optarg);
             break;
+        case 'd':
+            g_opts.stream_type = std::atoi(optarg);
+            break;
         default:
             // ignore unknown options for now
             break;
@@ -203,12 +216,13 @@ int main(int argc, char *argv[])
     // Initialize AML library
     try
     {
-        aml_setup(g_opts.type, g_opts.width, g_opts.height, g_opts.fps, NULL, 0, g_opts.frame_path);
-        receiver = std::make_unique<GstRtpReceiver>(5600, g_opts.type == 0 ? VideoCodec::H265 : VideoCodec::H264);
+        aml_setup(g_opts.type, g_opts.width, g_opts.height, g_opts.fps, NULL, 0, g_opts.frame_path, g_opts.stream_type);
+        const auto selected_codec = g_opts.type == 0 ? VideoCodec::H265 : VideoCodec::H264;
+        receiver = std::make_unique<GstRtpReceiver>(5600, selected_codec);
 
         spdlog::info("GstRtpReceiver instance created.");
         g_dvr = std::make_unique<DvrRecorder>();
-        g_dvr->set_video_params(g_opts.width, g_opts.height, g_opts.fps, VideoCodec::H265);
+        g_dvr->set_video_params(g_opts.width, g_opts.height, g_opts.fps, selected_codec);
         if (!g_opts.dvr_path.empty())
         {
             g_dvr->set_override_path(g_opts.dvr_path);
@@ -269,6 +283,8 @@ int main(int argc, char *argv[])
         {
             // Let the gst pull thread run at quite high priority
             static bool first = false;
+            static uint64_t fps_window_start = monotonic_ms_main();
+            static uint32_t fps_window_frames = 0;
             if (first)
             {
                 SchedulingHelper::set_thread_params_max_realtime("GstThread", SchedulingHelper::PRIORITY_REALTIME_LOW);
@@ -291,6 +307,24 @@ int main(int argc, char *argv[])
             if (now_ms - expected >= 1000 && last_queue_log_ms.compare_exchange_strong(expected, now_ms))
             {
                 spdlog::debug("[queue] depth={} bytes_received={} frame_count={}", depth, bytes_received, frame_count);
+            }
+            const bool recording_active = g_dvr && g_dvr->is_recording();
+            if (recording_active)
+            {
+                fps_window_frames++;
+                const uint64_t window_span = now_ms - fps_window_start;
+                if (window_span >= 500)
+                {
+                    const double fps = fps_window_frames * 1000.0 / std::max<uint64_t>(1, window_span);
+                    g_dvr->update_frame_rate(fps);
+                    fps_window_frames = 0;
+                    fps_window_start = now_ms;
+                }
+            }
+            else
+            {
+                fps_window_frames = 0;
+                fps_window_start = now_ms;
             }
             // osd_publish_uint_fact("gstreamer.received_bytes", NULL, 0, frame->size());
             // feed_packet_to_decoder(packet, frame->data(), frame->size());

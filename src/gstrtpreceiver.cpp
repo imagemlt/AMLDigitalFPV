@@ -35,7 +35,7 @@ namespace pipeline
         }
         else if (videoCodec == VideoCodec::H265)
         {
-            ss << "caps=\"application/x-rtp, media=(string)video, encoding-name=(string)H265, clock-rate=(int)90000\"";
+            ss << "caps=\"application/x-rtp, media=(string)video, encoding-name=(string)H265, payload=(int)97, clock-rate=(int)90000\"";
         }
         return ss.str();
     }
@@ -74,7 +74,7 @@ namespace pipeline
             std::stringstream ss;
             ss << "video/x-h265";
             ss << ", stream-format=\"byte-stream\"";
-            // ss<<", alignment=\"nal\"";
+            // ss << ", alignment=\"au\"";
             ss << " ! ";
             return ss.str();
         }
@@ -211,7 +211,11 @@ std::string GstRtpReceiver::construct_gstreamer_pipeline()
 {
     std::stringstream ss;
     if (!unix_socket)
-        ss << "udpsrc port=" << m_port << " " << pipeline::gst_create_rtp_caps(m_video_codec) << " ! ";
+    {
+        constexpr int kUdpSocketBuffer = 5 * 1024 * 1024; // match Digi's 5MB buffer
+        ss << "udpsrc buffer-size=" << kUdpSocketBuffer << " port=" << m_port << " "
+           << pipeline::gst_create_rtp_caps(m_video_codec) << " ! ";
+    }
     else
         ss << "appsrc name=appsrc " << pipeline::gst_create_rtp_caps(m_video_codec) << " ! ";
     ss << pipeline::create_rtp_depacketize_for_codec(m_video_codec);

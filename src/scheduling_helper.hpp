@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include "spdlog/spdlog.h"
 
+#include <algorithm>
 #include <sstream>
 #include <string>
 
@@ -43,6 +44,16 @@ static bool check_root() {
     const auto uid = getuid();
     const bool root = uid ? false : true;
     return root;
+}
+
+static void set_thread_params_other(const std::string &tag, int nice_value = 5)
+{
+    const int clamped = std::clamp(nice_value, -20, 19);
+    if (setpriority(PRIO_PROCESS, 0, clamped) != 0) {
+        spdlog::warn("Failed to set nice value {} for {}", clamped, tag);
+    } else {
+        spdlog::info("Set {} to nice {}", tag, clamped);
+    }
 }
 
 }  // namespace SchedulingHelper
