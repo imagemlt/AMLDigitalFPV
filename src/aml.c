@@ -296,6 +296,9 @@ int aml_setup(int videoFormat, int width, int height, int redrawRate, void *cont
   write_sysfs("/sys/class/amhdmitx/amhdmitx0/allm_mode", "1\n");
   write_sysfs("/sys/class/amhdmitx/amhdmitx0/contenttype_mode", "1\n");
 
+  // close RDMA
+  write_sysfs("/sys/module/rdma/parameters/enable", "0,0\n");
+
   spdlog_info("prepare VFM MAP");
   // if ((ret = codec_set_av_threshold(&codecParam, 0)) != 0)
   //{
