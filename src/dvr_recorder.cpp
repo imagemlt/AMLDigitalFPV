@@ -108,6 +108,7 @@ void DvrRecorder::stop_recording()
     if (!running_.load()) {
         return;
     }
+    spdlog::info("DVR stop requested");
     push_command(Command{CommandType::Stop, nullptr});
 }
 
@@ -252,6 +253,7 @@ bool DvrRecorder::open_writer(bool mark_recording)
     if (writer_ready_) {
         return true;
     }
+    current_path_.clear();
 
     uint32_t width = 0;
     uint32_t height = 0;
@@ -316,6 +318,7 @@ bool DvrRecorder::open_writer(bool mark_recording)
     }
 
     mux_ = mux;
+    current_path_ = output_path;
     writer_ready_ = true;
     current_file_bytes_.store(0, std::memory_order_relaxed);
     rotate_requested_.store(false, std::memory_order_relaxed);
@@ -337,6 +340,7 @@ void DvrRecorder::close_writer(bool clear_recording)
         }
         return;
     }
+    spdlog::info("DVR closing writer {}", current_path_.string());
     writer_ready_ = false;
     if (mux_) {
         MP4E_close(mux_);
@@ -351,6 +355,7 @@ void DvrRecorder::close_writer(bool clear_recording)
     }
     current_file_bytes_.store(0, std::memory_order_relaxed);
     rotate_requested_.store(false, std::memory_order_relaxed);
+    current_path_.clear();
     if (clear_recording) {
         recording_.store(false);
     }

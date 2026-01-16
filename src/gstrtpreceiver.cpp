@@ -213,7 +213,7 @@ std::string GstRtpReceiver::construct_gstreamer_pipeline()
     if (!unix_socket)
     {
         constexpr int kUdpSocketBuffer = 5 * 1024 * 1024; // match Digi's 5MB buffer
-        ss << "udpsrc buffer-size=" << kUdpSocketBuffer << " port=" << m_port << " "
+        ss << "udpsrc buffer-size=" << kUdpSocketBuffer << " reuse=true port=" << m_port << " "
            << pipeline::gst_create_rtp_caps(m_video_codec) << " ! ";
     }
     else

@@ -289,6 +289,8 @@ int aml_setup(int videoFormat, int width, int height, int redrawRate, void *cont
   write_sysfs("/sys/class/video/pre_hscaler_ntap_en", "0\n");
   write_sysfs("/sys/class/video/pre_vscaler_ntap_en", "0\n");
   write_sysfs("/sys/class/video/pip_pre_hscaler_ntap_en", "0\n");
+  write_sysfs("/sys/module/amvdec_h265/parameters/nal_skip_policy", "0\n");
+  write_sysfs("/sys/module/amvdec_h265/parameters/interlace_enable", "0\n");
 
   /* HDMI /sys/class/amhdmitx/amhdmitx0/ */
   write_sysfs("/sys/class/amhdmitx/amhdmitx0/attr", "rgb\n"); // 或 "rgb"
@@ -366,8 +368,8 @@ int aml_submit_decode_unit(uint8_t *decodeUnit, size_t length)
   // codec_checkin_pts(&codecParam, get_time_ms() - 8);
 
   uint64_t pts_us = (get_time_ms() - 8) * 1000ULL;
-  if (pts_us <= last_pts_us)
-    pts_us = last_pts_us + 1000; // 至少 +1ms
+  // if (pts_us <= last_pts_us)
+  //   pts_us = last_pts_us + 1000; // 至少 +1ms
   last_pts_us = pts_us;
 
   codec_checkin_pts_us64(&codecParam, pts_us);

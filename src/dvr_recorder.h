@@ -77,6 +77,7 @@ private:
     std::atomic<uint32_t> frame_duration_{1500};
     VideoCodec codec_{VideoCodec::H265};
     std::filesystem::path override_path_;
+    std::filesystem::path current_path_;
 
     std::atomic<bool> recording_{false};
     bool writer_ready_{false};

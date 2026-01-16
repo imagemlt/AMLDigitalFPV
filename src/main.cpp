@@ -3,6 +3,7 @@
 // #include <codec.h>
 #include "gstrtpreceiver.h"
 #include "dvr_recorder.h"
+#include "audio_receiver.h"
 #include "scheduling_helper.hpp"
 #include "spdlog/spdlog.h"
 #include "concurrentqueue/blockingconcurrentqueue.h"
@@ -17,6 +18,7 @@
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <unistd.h>
+#include <mutex>
 
 extern "C"
 {
@@ -34,6 +36,7 @@ struct CmdOptions
     int height = 1080;
     int fps = 120;
     std::string dvr_path; // if empty, auto path
+    int enable_audio = 0;
     int frame_path = 1;   // 1 presents AMVIDEO, 0 presents AMLVIDEO_AMVIDEO (for amlvideo v4l2 pipeline)
     int type = 0;         // 0: H265, 1: H264
     int stream_type = 0;  // 0: frame, 1: es video
@@ -46,6 +49,8 @@ static CmdOptions g_opts;
 std::unique_ptr<GstRtpReceiver>
     receiver;
 std::unique_ptr<DvrRecorder> g_dvr;
+std::unique_ptr<AudioReceiver> g_audio_receiver;
+std::mutex g_audio_mutex;
 moodycamel::BlockingConcurrentQueue<std::shared_ptr<std::vector<uint8_t>>> decode_queue;
 std::atomic<bool> decoding_active{false};
 std::thread decode_thread;
@@ -158,6 +163,30 @@ void dvr_command_loop(int port)
                         g_dvr->stop_recording();
                     }
                 }
+                else if (payload.find("sound=1") != std::string::npos)
+                {
+                    std::lock_guard<std::mutex> lock(g_audio_mutex);
+                    spdlog::info("Audio command: enable");
+                    if (!g_audio_receiver)
+                    {
+                        g_audio_receiver = std::make_unique<AudioReceiver>(5600, 98, 8000);
+                        if (!g_audio_receiver->start())
+                        {
+                            spdlog::error("Audio receiver failed to start");
+                            g_audio_receiver.reset();
+                        }
+                    }
+                }
+                else if (payload.find("sound=0") != std::string::npos)
+                {
+                    std::lock_guard<std::mutex> lock(g_audio_mutex);
+                    spdlog::info("Audio command: disable");
+                    if (g_audio_receiver)
+                    {
+                        g_audio_receiver->stop();
+                        g_audio_receiver.reset();
+                    }
+                }
                 else if (payload.find("ping=1") != std::string::npos)
                 {
                     constexpr const char *pong = "pong=1";
@@ -176,7 +205,7 @@ int main(int argc, char *argv[])
 {
     // parse args via getopt: -w width -h height -p fps -s path
     int opt;
-    while ((opt = getopt(argc, argv, "w:h:p:s:f:t:d:")) != -1)
+    while ((opt = getopt(argc, argv, "w:h:p:s:f:t:d:a:")) != -1)
     {
         switch (opt)
         {
@@ -200,6 +229,9 @@ int main(int argc, char *argv[])
             break;
         case 'd':
             g_opts.stream_type = std::atoi(optarg);
+            break;
+        case 'a':
+            g_opts.enable_audio = std::atoi(optarg);
             break;
         default:
             // ignore unknown options for now
@@ -226,6 +258,17 @@ int main(int argc, char *argv[])
         if (!g_opts.dvr_path.empty())
         {
             g_dvr->set_override_path(g_opts.dvr_path);
+        }
+        if (g_opts.enable_audio)
+        {
+            std::lock_guard<std::mutex> lock(g_audio_mutex);
+            spdlog::info("Audio CLI: enable (-a 1)");
+            g_audio_receiver = std::make_unique<AudioReceiver>(5600, 98, 8000);
+            if (!g_audio_receiver->start())
+            {
+                spdlog::error("Audio receiver failed to start");
+                g_audio_receiver.reset();
+            }
         }
         dvr_command_running = true;
         dvr_command_thread = std::thread(dvr_command_loop, kDvrControlPort);
@@ -365,6 +408,12 @@ int main(int argc, char *argv[])
     if (g_dvr)
     {
         g_dvr->shutdown();
+    }
+    if (g_audio_receiver)
+    {
+        std::lock_guard<std::mutex> lock(g_audio_mutex);
+        g_audio_receiver->stop();
+        g_audio_receiver.reset();
     }
     aml_cleanup();
     return 0;

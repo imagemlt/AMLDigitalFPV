@@ -26,6 +26,8 @@ pkg_check_modules(FMT REQUIRED fmt)
 pkg_check_modules(SPDLOG REQUIRED spdlog)
 # gstapp .pc may be missing; fall back to manual hints
 pkg_check_modules(GSTAPP QUIET gstapp-1.0)
+pkg_check_modules(OPUS REQUIRED opus)
+pkg_check_modules(PULSE REQUIRED libpulse-simple)
 
 # libamcodec usually doesn't have pkg-config; include path from sysroot
 if(DEFINED CMAKE_SYSROOT)
@@ -39,6 +41,8 @@ include_directories(
   ${FMT_INCLUDE_DIRS}
   ${SPDLOG_INCLUDE_DIRS}
   ${GSTAPP_INCLUDE_DIRS}
+  ${OPUS_INCLUDE_DIRS}
+  ${PULSE_INCLUDE_DIRS}
   ${CMAKE_SYSROOT}/usr/include/amcodec
   ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
@@ -49,6 +53,8 @@ link_directories(
   ${FMT_LIBRARY_DIRS}
   ${SPDLOG_LIBRARY_DIRS}
   ${GSTAPP_LIBRARY_DIRS}
+  ${OPUS_LIBRARY_DIRS}
+  ${PULSE_LIBRARY_DIRS}
 )
 
 add_definitions(-DSPDLOG_FMT_EXTERNAL)
@@ -57,6 +63,7 @@ set(SRC_CPP
   src/main.cpp
   src/gstrtpreceiver.cpp
   src/spdlog_wrapper.cpp
+  src/audio_receiver.cpp
   src/dvr_recorder.cpp
 )
 set(SRC_C
@@ -73,6 +80,8 @@ target_link_libraries(AMLDigitalFPV
   amcodec
   ${GSTAPP_LIBRARIES}
   gstapp-1.0
+  ${OPUS_LIBRARIES}
+  ${PULSE_LIBRARIES}
 )
 
 install(TARGETS AMLDigitalFPV DESTINATION bin)
