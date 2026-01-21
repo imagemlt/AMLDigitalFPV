@@ -230,6 +230,7 @@ int aml_setup(int videoFormat, int width, int height, int redrawRate, void *cont
   codecParam.am_sysinfo.param = (void *)((size_t)codecParam.am_sysinfo.param | SYNC_OUTSIDE);
 
   codecParam.vbuf_size = width * height * bufLevel;
+  spdlog_info("calibrated buf level to %d -> %d",bufLevel,codecParam.vbuf_size);
   int ret;
 
   if ((ret = codec_init(&codecParam)) != 0)
