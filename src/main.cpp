@@ -37,9 +37,10 @@ struct CmdOptions
     int fps = 120;
     std::string dvr_path; // if empty, auto path
     int enable_audio = 0;
-    int frame_path = 1;   // 1 presents AMVIDEO, 0 presents AMLVIDEO_AMVIDEO (for amlvideo v4l2 pipeline)
-    int type = 0;         // 0: H265, 1: H264
-    int stream_type = 0;  // 0: frame, 1: es video
+    int frame_path = 1;  // 1 presents AMVIDEO, 0 presents AMLVIDEO_AMVIDEO (for amlvideo v4l2 pipeline)
+    int type = 0;        // 0: H265, 1: H264
+    int stream_type = 0; // 0: frame, 1: es video
+    int buf_level = 4;   // from 1 - 8 buf level for aml decoder
 };
 
 int signal_flag = 0;
@@ -205,7 +206,7 @@ int main(int argc, char *argv[])
 {
     // parse args via getopt: -w width -h height -p fps -s path
     int opt;
-    while ((opt = getopt(argc, argv, "w:h:p:s:f:t:d:a:")) != -1)
+    while ((opt = getopt(argc, argv, "w:h:p:s:f:t:d:a:l:")) != -1)
     {
         switch (opt)
         {
@@ -233,6 +234,11 @@ int main(int argc, char *argv[])
         case 'a':
             g_opts.enable_audio = std::atoi(optarg);
             break;
+        case 'l':
+            g_opts.buf_level = std::atoi(optarg);
+            if (g_opts.buf_level <= 0)
+                g_opts.buf_level = 4;
+            break;
         default:
             // ignore unknown options for now
             break;
@@ -248,7 +254,7 @@ int main(int argc, char *argv[])
     // Initialize AML library
     try
     {
-        aml_setup(g_opts.type, g_opts.width, g_opts.height, g_opts.fps, NULL, 0, g_opts.frame_path, g_opts.stream_type);
+        aml_setup(g_opts.type, g_opts.width, g_opts.height, g_opts.fps, NULL, 0, g_opts.frame_path, g_opts.stream_type, g_opts.buf_level);
         const auto selected_codec = g_opts.type == 0 ? VideoCodec::H265 : VideoCodec::H264;
         receiver = std::make_unique<GstRtpReceiver>(5600, selected_codec);
 

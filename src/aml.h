@@ -45,7 +45,7 @@ extern "C"
 #define VIDEO_FORMAT_MASK_AV1 2
 
     void *aml_display_thread(void *unused);
-    int aml_setup(int videoFormat, int width, int height, int redrawRate, void *context, int drFlags, int framePath, int streamType);
+    int aml_setup(int videoFormat, int width, int height, int redrawRate, void *context, int drFlags, int framePath, int streamType, int bufLevel);
     void aml_cleanup();
     int aml_submit_decode_unit(uint8_t *decodeUnit, size_t size);
 
