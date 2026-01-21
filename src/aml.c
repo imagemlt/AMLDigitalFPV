@@ -115,7 +115,7 @@ void *aml_display_thread(void *unused)
   return NULL;
 }
 
-int aml_setup(int videoFormat, int width, int height, int redrawRate, void *context, int drFlags, int framePath, int streamType)
+int aml_setup(int videoFormat, int width, int height, int redrawRate, void *context, int drFlags, int framePath, int streamType, int bufLevel)
 {
   codecParam.handle = -1;
   codecParam.cntl_handle = -1;
@@ -229,7 +229,7 @@ int aml_setup(int videoFormat, int width, int height, int redrawRate, void *cont
   codecParam.am_sysinfo.rate = 90000 / redrawRate;
   codecParam.am_sysinfo.param = (void *)((size_t)codecParam.am_sysinfo.param | SYNC_OUTSIDE);
 
-  codecParam.vbuf_size = width * height * 1;
+  codecParam.vbuf_size = width * height * bufLevel;
   int ret;
 
   if ((ret = codec_init(&codecParam)) != 0)
