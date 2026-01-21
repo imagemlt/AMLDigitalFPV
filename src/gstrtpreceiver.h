@@ -57,6 +57,8 @@ public:
     void stop_receiving();
     void switch_to_file_playback(const char *file_path);
     void switch_to_stream();
+    void set_udp_reuse(bool enable);
+    void restart_receiving();
     void fast_forward(double rate = 2.0);
     void fast_rewind(double rate = 2.0);
     void skip_duration(int64_t skip_ms);
@@ -83,6 +85,7 @@ private:
     int sock;
     bool m_read_socket_run = false;
     std::unique_ptr<std::thread> m_read_socket_thread;
+    bool m_udp_reuse = false;
 
     // dvr
     void set_playback_rate(double rate);

@@ -213,7 +213,8 @@ std::string GstRtpReceiver::construct_gstreamer_pipeline()
     if (!unix_socket)
     {
         constexpr int kUdpSocketBuffer = 5 * 1024 * 1024; // match Digi's 5MB buffer
-        ss << "udpsrc buffer-size=" << kUdpSocketBuffer << " reuse=true port=" << m_port << " "
+        ss << "udpsrc buffer-size=" << kUdpSocketBuffer << " reuse=" << (m_udp_reuse ? "true" : "false")
+           << " port=" << m_port << " "
            << pipeline::gst_create_rtp_caps(m_video_codec) << " ! ";
     }
     else
@@ -363,6 +364,21 @@ void GstRtpReceiver::stop_receiving()
         m_gst_pipeline = nullptr;
     }
     spdlog::info("GstRtpReceiver::stop_receiving end");
+}
+
+void GstRtpReceiver::set_udp_reuse(bool enable)
+{
+    m_udp_reuse = enable;
+}
+
+void GstRtpReceiver::restart_receiving()
+{
+    if (!m_cb)
+    {
+        return;
+    }
+    stop_receiving();
+    start_receiving(m_cb);
 }
 
 std::string GstRtpReceiver::construct_file_playback_pipeline(const char *file_path)
