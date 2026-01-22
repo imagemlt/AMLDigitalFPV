@@ -26,9 +26,9 @@ if [ "$bad_frame" != "0" ]; then
 	echo 1 > /sys/module/amvdec_h265/parameters/hacked_lowlatency
 	echo 0 >/sys/module/amvdec_h265/parameters/nal_skip_policy
 	echo 0 >/sys/module/amvdec_h265/parameters/ref_frame_mark_flag
-	echo ${bad_frame} > /sys/module/amvdec_h265/parameters/error_handle_policy
+	echo "${bad_frame}" > /sys/module/amvdec_h265/parameters/error_handle_policy
 else
 	echo "[+]Error policy: Drop FRAME"
 fi
 
-/storage/streamer/AMLDigitalFPV -w ${video_width} -h ${video_height} -p 120 -a ${sound} -l ${buf_level}
+/storage/streamer/AMLDigitalFPV -w "${video_width}" -h "${video_height}" -p 120 -a "${sound}" -l "${buf_level}"
