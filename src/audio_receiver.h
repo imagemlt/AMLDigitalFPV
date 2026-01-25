@@ -1,7 +1,9 @@
 #pragma once
 
 #include <atomic>
+#include <memory>
 #include <thread>
+#include <vector>
 
 struct pa_simple;
 struct OpusDecoder;
@@ -13,7 +15,9 @@ public:
     ~AudioReceiver();
 
     bool start();
+    bool start_external();
     void stop();
+    void feed_opus_payload(const std::shared_ptr<std::vector<uint8_t>> &payload);
 
 private:
     void audio_loop();
@@ -30,5 +34,6 @@ private:
     OpusDecoder *decoder_ = nullptr;
 
     std::atomic<bool> running_{false};
+    bool external_mode_ = false;
     std::thread worker_;
 };

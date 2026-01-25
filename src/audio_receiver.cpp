@@ -66,6 +66,7 @@ bool AudioReceiver::start()
     if (running_.load())
         return true;
 
+    external_mode_ = false;
     if (!init_decoder())
     {
         cleanup();
@@ -79,6 +80,27 @@ bool AudioReceiver::start()
 
     running_.store(true);
     worker_ = std::thread(&AudioReceiver::audio_loop, this);
+    return true;
+}
+
+bool AudioReceiver::start_external()
+{
+    if (running_.load())
+        return true;
+
+    external_mode_ = true;
+    if (!init_decoder())
+    {
+        cleanup();
+        return false;
+    }
+    if (!init_pulse())
+    {
+        cleanup();
+        return false;
+    }
+
+    running_.store(true);
     return true;
 }
 
@@ -109,6 +131,27 @@ void AudioReceiver::cleanup()
         close(sock_fd_);
         sock_fd_ = -1;
     }
+    external_mode_ = false;
+}
+
+void AudioReceiver::feed_opus_payload(const std::shared_ptr<std::vector<uint8_t>> &payload)
+{
+    if (!running_.load() || !payload || payload->empty())
+        return;
+    if (!decoder_ || !pulse_)
+        return;
+
+    const int max_frame_samples = sample_rate_ * 60 / 1000;
+    std::vector<int16_t> pcm(max_frame_samples);
+    int decoded = opus_decode(decoder_, payload->data(), static_cast<opus_int32>(payload->size()),
+                              pcm.data(), max_frame_samples, 0);
+    if (decoded <= 0)
+        return;
+
+    size_t bytes = decoded * sizeof(int16_t);
+    int error = 0;
+    if (pa_simple_write(pulse_, pcm.data(), bytes, &error) < 0)
+        spdlog::warn("PulseAudio write failed: {}", pa_strerror(error));
 }
 
 void AudioReceiver::audio_loop()

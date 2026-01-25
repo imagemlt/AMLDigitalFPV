@@ -53,12 +53,15 @@ public:
     // The big advantage of gstreamer is that it seems to handle all those parsing quirks the best,
     // e.g. the frames on this cb should be easily passable to whatever decode api is available.
     typedef std::function<void(std::shared_ptr<std::vector<uint8_t>> frame)> NEW_FRAME_CALLBACK;
+    typedef std::function<void(std::shared_ptr<std::vector<uint8_t>> frame)> AUDIO_FRAME_CALLBACK;
     void start_receiving(NEW_FRAME_CALLBACK cb);
     void stop_receiving();
     void switch_to_file_playback(const char *file_path);
     void switch_to_stream();
     void set_udp_reuse(bool enable);
     void restart_receiving();
+    void set_audio_callback(AUDIO_FRAME_CALLBACK cb);
+    void set_audio_enabled(bool enable);
     void fast_forward(double rate = 2.0);
     void fast_rewind(double rate = 2.0);
     void skip_duration(int64_t skip_ms);
@@ -71,21 +74,27 @@ private:
     std::string construct_file_playback_pipeline(const char *file_path);
     void loop_pull_samples();
     void on_new_sample(std::shared_ptr<std::vector<uint8_t>> sample);
+    void loop_pull_audio_samples();
     // The gstreamer pipeline
     GstElement *m_gst_pipeline = nullptr;
     NEW_FRAME_CALLBACK m_cb;
+    AUDIO_FRAME_CALLBACK m_audio_cb;
     VideoCodec m_video_codec;
     int m_port;
     // appsink
     GstElement *m_app_sink_element = nullptr;
+    GstElement *m_audio_sink_element = nullptr;
     bool m_pull_samples_run;
     std::unique_ptr<std::thread> m_pull_samples_thread = nullptr;
+    bool m_pull_audio_samples_run = false;
+    std::unique_ptr<std::thread> m_pull_audio_samples_thread = nullptr;
     // appsrc
     const char *unix_socket = nullptr;
     int sock;
     bool m_read_socket_run = false;
     std::unique_ptr<std::thread> m_read_socket_thread;
     bool m_udp_reuse = false;
+    bool m_enable_audio = false;
 
     // dvr
     void set_playback_rate(double rate);

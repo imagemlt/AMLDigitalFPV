@@ -213,6 +213,23 @@ std::string GstRtpReceiver::construct_gstreamer_pipeline()
     if (!unix_socket)
     {
         constexpr int kUdpSocketBuffer = 5 * 1024 * 1024; // match Digi's 5MB buffer
+        if (m_enable_audio)
+        {
+            ss << "udpsrc buffer-size=" << kUdpSocketBuffer << " reuse=" << (m_udp_reuse ? "true" : "false")
+               << " port=" << m_port << " "
+               << "caps=\"application/x-rtp, media=(string)video, encoding-name=(string)"
+               << (m_video_codec == VideoCodec::H264 ? "H264" : "H265")
+               << ", payload=(int)" << (m_video_codec == VideoCodec::H264 ? 96 : 97)
+               << (m_video_codec == VideoCodec::H265 ? ", clock-rate=(int)90000" : "")
+               << "; application/x-rtp, media=(string)audio, encoding-name=(string)OPUS, payload=(int)98, clock-rate=(int)8000\" ! "
+               << "rtpdemux name=demux ";
+            ss << "demux. ! queue ! " << pipeline::create_rtp_depacketize_for_codec(m_video_codec);
+            ss << pipeline::create_parse_for_codec(m_video_codec);
+            ss << pipeline::create_out_caps(m_video_codec);
+            ss << " appsink drop=true name=out_appsink ";
+            ss << "demux. ! queue ! rtpopusdepay ! appsink drop=true name=audio_appsink";
+            return ss.str();
+        }
         ss << "udpsrc buffer-size=" << kUdpSocketBuffer << " reuse=" << (m_udp_reuse ? "true" : "false")
            << " port=" << m_port << " "
            << pipeline::gst_create_rtp_caps(m_video_codec) << " ! ";
@@ -234,6 +251,17 @@ void GstRtpReceiver::loop_pull_samples()
         this->on_new_sample(sample);
     };
     loop_pull_appsink_samples(m_pull_samples_run, m_app_sink_element, cb);
+}
+
+void GstRtpReceiver::loop_pull_audio_samples()
+{
+    assert(m_audio_sink_element);
+    auto cb = [this](std::shared_ptr<std::vector<uint8_t>> sample)
+    {
+        if (m_audio_cb)
+            m_audio_cb(sample);
+    };
+    loop_pull_appsink_samples(m_pull_audio_samples_run, m_audio_sink_element, cb);
 }
 
 void GstRtpReceiver::on_new_sample(std::shared_ptr<std::vector<uint8_t>> sample)
@@ -341,12 +369,18 @@ void GstRtpReceiver::stop_receiving()
 {
     spdlog::info("GstRtpReceiver::stop_receiving start");
     m_pull_samples_run = false;
+    m_pull_audio_samples_run = false;
     m_read_socket_run = false;
 
     if (m_pull_samples_thread)
     {
         m_pull_samples_thread->join();
         m_pull_samples_thread = nullptr;
+    }
+    if (m_pull_audio_samples_thread)
+    {
+        m_pull_audio_samples_thread->join();
+        m_pull_audio_samples_thread = nullptr;
     }
 
     if (m_read_socket_thread)
@@ -363,12 +397,23 @@ void GstRtpReceiver::stop_receiving()
         gst_object_unref(m_gst_pipeline);
         m_gst_pipeline = nullptr;
     }
+    m_audio_sink_element = nullptr;
     spdlog::info("GstRtpReceiver::stop_receiving end");
 }
 
 void GstRtpReceiver::set_udp_reuse(bool enable)
 {
     m_udp_reuse = enable;
+}
+
+void GstRtpReceiver::set_audio_callback(AUDIO_FRAME_CALLBACK cb)
+{
+    m_audio_cb = std::move(cb);
+}
+
+void GstRtpReceiver::set_audio_enabled(bool enable)
+{
+    m_enable_audio = enable;
 }
 
 void GstRtpReceiver::restart_receiving()
@@ -529,6 +574,15 @@ void GstRtpReceiver::switch_to_stream()
 
     m_pull_samples_run = true;
     m_pull_samples_thread = std::make_unique<std::thread>(&GstRtpReceiver::loop_pull_samples, this);
+    if (m_enable_audio)
+    {
+        m_audio_sink_element = gst_bin_get_by_name(GST_BIN(m_gst_pipeline), "audio_appsink");
+        if (m_audio_sink_element && m_audio_cb)
+        {
+            m_pull_audio_samples_run = true;
+            m_pull_audio_samples_thread = std::make_unique<std::thread>(&GstRtpReceiver::loop_pull_audio_samples, this);
+        }
+    }
 }
 
 void GstRtpReceiver::set_playback_rate(double rate)

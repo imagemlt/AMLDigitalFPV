@@ -173,16 +173,20 @@ void dvr_command_loop(int port)
                         if (!g_audio_receiver)
                         {
                             g_audio_receiver = std::make_unique<AudioReceiver>(5600, 98, 8000);
-                            if (!g_audio_receiver->start())
+                            if (!g_audio_receiver->start_external())
                             {
                                 spdlog::error("Audio receiver failed to start");
                                 g_audio_receiver.reset();
                             }
                         }
                     }
-                    if (!g_udp_reuse_enabled.exchange(true) && receiver)
+                    if (receiver && g_audio_receiver)
                     {
-                        receiver->set_udp_reuse(true);
+                        receiver->set_audio_enabled(true);
+                        receiver->set_audio_callback([](std::shared_ptr<std::vector<uint8_t>> frame)
+                                                     {
+                            if (g_audio_receiver)
+                                g_audio_receiver->feed_opus_payload(frame); });
                         receiver->restart_receiving();
                     }
                 }
@@ -197,9 +201,10 @@ void dvr_command_loop(int port)
                             g_audio_receiver.reset();
                         }
                     }
-                    if (!g_opts.enable_audio && g_udp_reuse_enabled.exchange(false) && receiver)
+                    if (!g_opts.enable_audio && receiver)
                     {
-                        receiver->set_udp_reuse(false);
+                        receiver->set_audio_callback(nullptr);
+                        receiver->set_audio_enabled(false);
                         receiver->restart_receiving();
                     }
                 }
@@ -272,8 +277,8 @@ int main(int argc, char *argv[])
         aml_setup(g_opts.type, g_opts.width, g_opts.height, g_opts.fps, NULL, 0, g_opts.frame_path, g_opts.stream_type, g_opts.buf_level);
         const auto selected_codec = g_opts.type == 0 ? VideoCodec::H265 : VideoCodec::H264;
         receiver = std::make_unique<GstRtpReceiver>(5600, selected_codec);
-        g_udp_reuse_enabled.store(g_opts.enable_audio != 0);
-        receiver->set_udp_reuse(g_udp_reuse_enabled.load());
+        g_udp_reuse_enabled.store(false);
+        receiver->set_udp_reuse(false);
 
         spdlog::info("GstRtpReceiver instance created.");
         g_dvr = std::make_unique<DvrRecorder>();
@@ -287,7 +292,7 @@ int main(int argc, char *argv[])
             std::lock_guard<std::mutex> lock(g_audio_mutex);
             spdlog::info("Audio CLI: enable (-a 1)");
             g_audio_receiver = std::make_unique<AudioReceiver>(5600, 98, 8000);
-            if (!g_audio_receiver->start())
+            if (!g_audio_receiver->start_external())
             {
                 spdlog::error("Audio receiver failed to start");
                 g_audio_receiver.reset();
@@ -401,6 +406,14 @@ int main(int argc, char *argv[])
         };
 
         spdlog::info("register receiver");
+        if (g_audio_receiver)
+        {
+            receiver->set_audio_enabled(true);
+            receiver->set_audio_callback([](std::shared_ptr<std::vector<uint8_t>> frame)
+                                         {
+                if (g_audio_receiver)
+                    g_audio_receiver->feed_opus_payload(frame); });
+        }
         receiver->start_receiving(cb);
 
         spdlog::info("GST RTP Receiver is running. Press Ctrl-C to stop...");
