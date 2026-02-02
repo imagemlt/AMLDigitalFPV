@@ -53,10 +53,13 @@ public:
     // The big advantage of gstreamer is that it seems to handle all those parsing quirks the best,
     // e.g. the frames on this cb should be easily passable to whatever decode api is available.
     typedef std::function<void(std::shared_ptr<std::vector<uint8_t>> frame)> NEW_FRAME_CALLBACK;
+    typedef std::function<void(std::shared_ptr<std::vector<uint8_t>> payload)> AUDIO_PAYLOAD_CALLBACK;
     void start_receiving(NEW_FRAME_CALLBACK cb);
     void stop_receiving();
     void switch_to_file_playback(const char *file_path);
     void switch_to_stream();
+    void set_udp_appsrc(bool enable);
+    void set_audio_payload_callback(AUDIO_PAYLOAD_CALLBACK cb);
     void fast_forward(double rate = 2.0);
     void fast_rewind(double rate = 2.0);
     void skip_duration(int64_t skip_ms);
@@ -72,6 +75,7 @@ private:
     // The gstreamer pipeline
     GstElement *m_gst_pipeline = nullptr;
     NEW_FRAME_CALLBACK m_cb;
+    AUDIO_PAYLOAD_CALLBACK m_audio_cb;
     VideoCodec m_video_codec;
     int m_port;
     // appsink
@@ -80,7 +84,8 @@ private:
     std::unique_ptr<std::thread> m_pull_samples_thread = nullptr;
     // appsrc
     const char *unix_socket = nullptr;
-    int sock;
+    int sock = -1;
+    bool m_udp_appsrc = false;
     bool m_read_socket_run = false;
     std::unique_ptr<std::thread> m_read_socket_thread;
 

@@ -24,6 +24,9 @@ pkg_check_modules(GSTREAMER REQUIRED gstreamer-1.0)
 pkg_check_modules(GLIB REQUIRED glib-2.0)
 pkg_check_modules(FMT REQUIRED fmt)
 pkg_check_modules(SPDLOG REQUIRED spdlog)
+# audio
+pkg_check_modules(OPUS REQUIRED opus)
+pkg_check_modules(PULSE REQUIRED libpulse-simple)
 # gstapp .pc may be missing; fall back to manual hints
 pkg_check_modules(GSTAPP QUIET gstapp-1.0)
 
@@ -38,6 +41,8 @@ include_directories(
   ${GLIB_INCLUDE_DIRS}
   ${FMT_INCLUDE_DIRS}
   ${SPDLOG_INCLUDE_DIRS}
+  ${OPUS_INCLUDE_DIRS}
+  ${PULSE_INCLUDE_DIRS}
   ${GSTAPP_INCLUDE_DIRS}
   ${CMAKE_SYSROOT}/usr/include/amcodec
   ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -48,6 +53,8 @@ link_directories(
   ${GLIB_LIBRARY_DIRS}
   ${FMT_LIBRARY_DIRS}
   ${SPDLOG_LIBRARY_DIRS}
+  ${OPUS_LIBRARY_DIRS}
+  ${PULSE_LIBRARY_DIRS}
   ${GSTAPP_LIBRARY_DIRS}
 )
 
@@ -58,6 +65,7 @@ set(SRC_CPP
   src/gstrtpreceiver.cpp
   src/spdlog_wrapper.cpp
   src/dvr_recorder.cpp
+  src/audio_receiver.cpp
 )
 set(SRC_C
   src/util.c
@@ -73,6 +81,8 @@ target_link_libraries(AMLDigitalFPV
   amcodec
   ${GSTAPP_LIBRARIES}
   gstapp-1.0
+  ${OPUS_LIBRARIES}
+  ${PULSE_LIBRARIES}
 )
 
 install(TARGETS AMLDigitalFPV DESTINATION bin)

@@ -18,11 +18,14 @@
 #include <utility>
 #include <atomic>
 #include <chrono>
+#include <cerrno>
+#include <array>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <sys/un.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <netinet/in.h>
 
 namespace pipeline
 {
@@ -136,7 +139,11 @@ GstRtpReceiver::GstRtpReceiver(const char *s, const VideoCodec &codec)
 
 GstRtpReceiver::~GstRtpReceiver()
 {
-    close(sock);
+    if (sock >= 0)
+    {
+        close(sock);
+        sock = -1;
+    }
 }
 
 static uint64_t monotonic_ms()
@@ -207,10 +214,47 @@ static void loop_pull_appsink_samples(bool &keep_looping, GstElement *app_sink_e
     }
 }
 
+static int create_udp_socket(int port, int rcvbuf, bool reuse, uint8_t payload_type)
+{
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0)
+    {
+        spdlog::error("socket() failed: {}", strerror(errno));
+        return -1;
+    }
+
+    if (reuse)
+    {
+        int opt = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+        setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+    }
+
+    if (rcvbuf > 0)
+    {
+        setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+    }
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons(port);
+
+    if (bind(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0)
+    {
+        spdlog::error("bind() failed on UDP {}: {}", port, strerror(errno));
+        close(fd);
+        return -1;
+    }
+
+    (void)payload_type;
+    return fd;
+}
+
 std::string GstRtpReceiver::construct_gstreamer_pipeline()
 {
     std::stringstream ss;
-    if (!unix_socket)
+    if (!unix_socket && !m_udp_appsrc)
     {
         constexpr int kUdpSocketBuffer = 5 * 1024 * 1024; // match Digi's 5MB buffer
         ss << "udpsrc buffer-size=" << kUdpSocketBuffer << " port=" << m_port << " "
@@ -223,6 +267,16 @@ std::string GstRtpReceiver::construct_gstreamer_pipeline()
     ss << pipeline::create_out_caps(m_video_codec);
     ss << " appsink drop=true name=out_appsink";
     return ss.str();
+}
+
+void GstRtpReceiver::set_udp_appsrc(bool enable)
+{
+    m_udp_appsrc = enable;
+}
+
+void GstRtpReceiver::set_audio_payload_callback(AUDIO_PAYLOAD_CALLBACK cb)
+{
+    m_audio_cb = std::move(cb);
 }
 
 void GstRtpReceiver::loop_pull_samples()
@@ -250,7 +304,33 @@ void GstRtpReceiver::on_new_sample(std::shared_ptr<std::vector<uint8_t>> sample)
 /* socket → appsrc */
 static constexpr int SOCKET_POLL_TIMEOUT_MS = 100;
 
-static void loop_read_socket(bool &keep_looping, int sock_fd, GstAppSrc *appsrc)
+static void setup_appsrc_buffer_pool(GstElement *appsrc, VideoCodec video_codec)
+{
+    GstBufferPool *pool = gst_buffer_pool_new();
+    GstStructure *config = gst_buffer_pool_get_config(pool);
+
+    GstCaps *caps = gst_caps_new_simple("application/x-rtp",
+                                        "media", G_TYPE_STRING, "video",
+                                        "encoding-name", G_TYPE_STRING,
+                                        (video_codec == VideoCodec::H264) ? "H264" : "H265",
+                                        NULL);
+
+    gst_buffer_pool_config_set_params(config, caps, MAX_PACKET_SIZE, 10, 20);
+    gst_buffer_pool_set_config(pool, config);
+    gst_caps_unref(caps);
+
+    if (!gst_buffer_pool_set_active(pool, TRUE))
+    {
+        spdlog::error("Failed to activate buffer pool");
+        gst_object_unref(pool);
+        return;
+    }
+    g_object_set_data(G_OBJECT(appsrc), "buffer-pool", pool);
+}
+
+static void loop_read_socket(bool &keep_looping, int sock_fd, GstAppSrc *appsrc,
+                             uint8_t video_pt,
+                             const GstRtpReceiver::AUDIO_PAYLOAD_CALLBACK &audio_cb)
 {
     GstBufferPool *pool = GST_BUFFER_POOL(g_object_get_data(G_OBJECT(appsrc), "buffer-pool"));
     uint64_t pkt_counter = 0;
@@ -267,7 +347,6 @@ static void loop_read_socket(bool &keep_looping, int sock_fd, GstAppSrc *appsrc)
         if (ready <= 0)
             continue;
 
-        // Get buffer from pool
         GstBuffer *buffer = nullptr;
         GstFlowReturn ret = gst_buffer_pool_acquire_buffer(pool, &buffer, nullptr);
         if (ret != GST_FLOW_OK || !buffer)
@@ -276,7 +355,6 @@ static void loop_read_socket(bool &keep_looping, int sock_fd, GstAppSrc *appsrc)
             continue;
         }
 
-        // Map buffer for writing
         GstMapInfo map;
         if (!gst_buffer_map(buffer, &map, GST_MAP_WRITE))
         {
@@ -285,21 +363,40 @@ static void loop_read_socket(bool &keep_looping, int sock_fd, GstAppSrc *appsrc)
             continue;
         }
 
-        // Read data directly into buffer
-        ssize_t n = recv(sock_fd, map.data, map.size, 0);
-        gst_buffer_unmap(buffer, &map);
-
-        if (n <= RTP_HEADER_LEN)
+        const ssize_t n = recv(sock_fd, map.data, map.size, 0);
+        if (n <= 0)
         {
-            spdlog::warn("Invalid RTP packet size: {}", n);
+            gst_buffer_unmap(buffer, &map);
             gst_buffer_unref(buffer);
             continue;
         }
 
-        // Resize buffer to actual data size
+        if (n <= RTP_HEADER_LEN)
+        {
+            spdlog::warn("Invalid RTP packet size: {}", n);
+            gst_buffer_unmap(buffer, &map);
+            gst_buffer_unref(buffer);
+            continue;
+        }
+
+        const uint8_t pt = static_cast<uint8_t>(map.data[1] & 0x7f);
+        if (pt != video_pt)
+        {
+            if (pt == 98 && audio_cb)
+            {
+                const size_t payload_size = static_cast<size_t>(n - RTP_HEADER_LEN);
+                auto payload = std::make_shared<std::vector<uint8_t>>(payload_size);
+                std::memcpy(payload->data(), map.data + RTP_HEADER_LEN, payload_size);
+                audio_cb(payload);
+            }
+            gst_buffer_unmap(buffer, &map);
+            gst_buffer_unref(buffer);
+            continue;
+        }
+
+        gst_buffer_unmap(buffer, &map);
         gst_buffer_resize(buffer, 0, n);
 
-        // Push to appsrc
         ret = gst_app_src_push_buffer(appsrc, buffer);
         if (ret != GST_FLOW_OK)
         {
@@ -318,11 +415,7 @@ static void loop_read_socket(bool &keep_looping, int sock_fd, GstAppSrc *appsrc)
         }
     }
 
-    if (pool)
-    {
-        gst_buffer_pool_set_active(pool, FALSE);
-        gst_object_unref(pool);
-    }
+    // buffer pool owned by appsrc
 }
 
 void GstRtpReceiver::start_receiving(NEW_FRAME_CALLBACK cb)
@@ -361,6 +454,11 @@ void GstRtpReceiver::stop_receiving()
         gst_element_set_state(m_gst_pipeline, GST_STATE_NULL);
         gst_object_unref(m_gst_pipeline);
         m_gst_pipeline = nullptr;
+    }
+    if (m_udp_appsrc && sock >= 0)
+    {
+        close(sock);
+        sock = -1;
     }
     spdlog::info("GstRtpReceiver::stop_receiving end");
 }
@@ -431,6 +529,21 @@ void GstRtpReceiver::switch_to_stream()
         return;
     }
 
+    if (m_udp_appsrc && !unix_socket)
+    {
+        constexpr int kUdpSocketBuffer = 5 * 1024 * 1024;
+        const uint8_t payload_type = (m_video_codec == VideoCodec::H264) ? 96 : 97;
+        if (sock < 0)
+        {
+            sock = create_udp_socket(m_port, kUdpSocketBuffer, false, payload_type);
+            if (sock < 0)
+            {
+                spdlog::error("Failed to create UDP socket for appsrc");
+                return;
+            }
+        }
+    }
+
     // If using Unix socket, setup appsrc with buffer pool
     if (unix_socket)
     {
@@ -441,10 +554,6 @@ void GstRtpReceiver::switch_to_stream()
             return;
         }
 
-        // Configure appsrc with buffer pool
-        GstBufferPool *pool = nullptr;
-        GstStructure *config = nullptr;
-
         g_object_set(appsrc,
                      "stream-type", 0,
                      "is-live", TRUE,
@@ -452,37 +561,38 @@ void GstRtpReceiver::switch_to_stream()
                      "block", FALSE,
                      "do-timestamp", TRUE,
                      NULL);
-
-        // Create buffer pool
-        pool = gst_buffer_pool_new();
-        config = gst_buffer_pool_get_config(pool);
-
-        GstCaps *caps = gst_caps_new_simple("application/x-rtp",
-                                            "media", G_TYPE_STRING, "video",
-                                            "encoding-name", G_TYPE_STRING,
-                                            (m_video_codec == VideoCodec::H264) ? "H264" : "H265",
-                                            NULL);
-
-        gst_buffer_pool_config_set_params(config, caps, MAX_PACKET_SIZE, 10, 20);
-        gst_buffer_pool_set_config(pool, config);
-        gst_caps_unref(caps);
-
-        if (!gst_buffer_pool_set_active(pool, TRUE))
-        {
-            spdlog::error("Failed to activate buffer pool");
-            gst_object_unref(pool);
-        }
-        else
-        {
-            g_object_set_data(G_OBJECT(appsrc), "buffer-pool", pool);
-        }
+        setup_appsrc_buffer_pool(appsrc, m_video_codec);
 
         // Start socket reading thread
         m_read_socket_run = true;
         m_read_socket_thread = std::make_unique<std::thread>([this, appsrc]()
                                                              {
             pthread_setname_np(pthread_self(), "socket-reader");
-            loop_read_socket(m_read_socket_run, this->sock, GST_APP_SRC(appsrc)); });
+            const uint8_t video_pt = (m_video_codec == VideoCodec::H264) ? 96 : 97;
+            loop_read_socket(m_read_socket_run, this->sock, GST_APP_SRC(appsrc), video_pt, this->m_audio_cb); });
+    }
+    else if (m_udp_appsrc)
+    {
+        GstElement *appsrc = gst_bin_get_by_name(GST_BIN(m_gst_pipeline), "appsrc");
+        if (!appsrc)
+        {
+            spdlog::error("Failed to get appsrc element from pipeline");
+            return;
+        }
+        g_object_set(appsrc,
+                     "stream-type", 0,
+                     "is-live", TRUE,
+                     "format", GST_FORMAT_TIME,
+                     "block", FALSE,
+                     "do-timestamp", TRUE,
+                     NULL);
+        setup_appsrc_buffer_pool(appsrc, m_video_codec);
+        m_read_socket_run = true;
+        m_read_socket_thread = std::make_unique<std::thread>([this, appsrc]()
+                                                             {
+            pthread_setname_np(pthread_self(), "socket-reader");
+            const uint8_t video_pt = (m_video_codec == VideoCodec::H264) ? 96 : 97;
+            loop_read_socket(m_read_socket_run, this->sock, GST_APP_SRC(appsrc), video_pt, this->m_audio_cb); });
     }
 
     // Setup appsink

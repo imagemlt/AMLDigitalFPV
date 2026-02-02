@@ -3,6 +3,7 @@
 // #include <codec.h>
 #include "gstrtpreceiver.h"
 #include "dvr_recorder.h"
+#include "audio_receiver.h"
 #include "scheduling_helper.hpp"
 #include "spdlog/spdlog.h"
 #include "concurrentqueue/blockingconcurrentqueue.h"
@@ -17,6 +18,7 @@
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <unistd.h>
+#include <mutex>
 
 extern "C"
 {
@@ -38,6 +40,7 @@ struct CmdOptions
     int type = 0;         // 0: H265, 1: H264
     int stream_type = 0;  // 0: frame, 1: es video
 	int bufLevel = 4;// vbuf level from 1 to 64 
+    int enable_audio = 0; // enable UDP appsrc + RTP payload filter for audio present
 };
 
 int signal_flag = 0;
@@ -47,12 +50,16 @@ static CmdOptions g_opts;
 std::unique_ptr<GstRtpReceiver>
     receiver;
 std::unique_ptr<DvrRecorder> g_dvr;
+std::unique_ptr<AudioReceiver> g_audio;
+std::mutex g_receiver_mutex;
 moodycamel::BlockingConcurrentQueue<std::shared_ptr<std::vector<uint8_t>>> decode_queue;
 std::atomic<bool> decoding_active{false};
 std::thread decode_thread;
 std::atomic<uint64_t> last_queue_log_ms{0};
 std::thread dvr_command_thread;
 std::atomic<bool> dvr_command_running{false};
+std::atomic<bool> g_audio_enabled{false};
+GstRtpReceiver::NEW_FRAME_CALLBACK g_video_cb;
 
 static uint64_t monotonic_ms_main()
 {
@@ -159,6 +166,51 @@ void dvr_command_loop(int port)
                         g_dvr->stop_recording();
                     }
                 }
+                else if (payload.find("sound=1") != std::string::npos)
+                {
+                    spdlog::info("Audio command: enable");
+                    g_audio_enabled.store(true);
+                    std::lock_guard<std::mutex> lock(g_receiver_mutex);
+                    if (!g_audio)
+                    {
+                        g_audio = std::make_unique<AudioReceiver>(5600, 98, 8000);
+                        if (!g_audio->start())
+                        {
+                            spdlog::error("Audio receiver failed to start");
+                            g_audio.reset();
+                        }
+                    }
+                    if (receiver)
+                    {
+                        receiver->stop_receiving();
+                        receiver->set_udp_appsrc(true);
+                        receiver->set_audio_payload_callback([&](std::shared_ptr<std::vector<uint8_t>> payload)
+                                                             {
+                            if (g_audio) {
+                                g_audio->enqueue_payload(payload);
+                            }
+                        });
+                        receiver->start_receiving(g_video_cb);
+                    }
+                }
+                else if (payload.find("sound=0") != std::string::npos)
+                {
+                    spdlog::info("Audio command: disable");
+                    g_audio_enabled.store(false);
+                    std::lock_guard<std::mutex> lock(g_receiver_mutex);
+                    if (g_audio)
+                    {
+                        g_audio->stop();
+                        g_audio.reset();
+                    }
+                    if (receiver)
+                    {
+                        receiver->stop_receiving();
+                        receiver->set_udp_appsrc(false);
+                        receiver->set_audio_payload_callback(nullptr);
+                        receiver->start_receiving(g_video_cb);
+                    }
+                }
                 else if (payload.find("ping=1") != std::string::npos)
                 {
                     constexpr const char *pong = "pong=1";
@@ -177,7 +229,7 @@ int main(int argc, char *argv[])
 {
     // parse args via getopt: -w width -h height -p fps -s path
     int opt;
-    while ((opt = getopt(argc, argv, "w:h:p:s:f:t:d:l:")) != -1)
+    while ((opt = getopt(argc, argv, "w:h:p:s:f:t:d:l:a:")) != -1)
     {
         switch (opt)
         {
@@ -208,6 +260,9 @@ int main(int argc, char *argv[])
 				g_opts.bufLevel = 4;
 			}
 			break;
+        case 'a':
+            g_opts.enable_audio = std::atoi(optarg);
+            break;
         default:
             // ignore unknown options for now
             break;
@@ -226,6 +281,17 @@ int main(int argc, char *argv[])
         aml_setup(g_opts.type, g_opts.width, g_opts.height, g_opts.fps, NULL, 0, g_opts.frame_path, g_opts.stream_type, g_opts.bufLevel);
         const auto selected_codec = g_opts.type == 0 ? VideoCodec::H265 : VideoCodec::H264;
         receiver = std::make_unique<GstRtpReceiver>(5600, selected_codec);
+        receiver->set_udp_appsrc(g_opts.enable_audio != 0);
+        if (g_opts.enable_audio)
+        {
+            g_audio_enabled.store(true);
+            g_audio = std::make_unique<AudioReceiver>(5600, 98, 8000);
+            if (!g_audio->start())
+            {
+                spdlog::error("Audio receiver failed to start");
+                g_audio.reset();
+            }
+        }
 
         spdlog::info("GstRtpReceiver instance created.");
         g_dvr = std::make_unique<DvrRecorder>();
@@ -234,9 +300,6 @@ int main(int argc, char *argv[])
         {
             g_dvr->set_override_path(g_opts.dvr_path);
         }
-        dvr_command_running = true;
-        dvr_command_thread = std::thread(dvr_command_loop, kDvrControlPort);
-
         long long bytes_received = 0;
         long long frame_count = 0;
         uint64_t period_start = 0;
@@ -342,7 +405,20 @@ int main(int argc, char *argv[])
         };
 
         spdlog::info("register receiver");
-        receiver->start_receiving(cb);
+        g_video_cb = cb;
+        if (g_opts.enable_audio)
+        {
+            receiver->set_audio_payload_callback([&](std::shared_ptr<std::vector<uint8_t>> payload)
+                                                 {
+                if (g_audio) {
+                    g_audio->enqueue_payload(payload);
+                }
+            });
+        }
+        receiver->start_receiving(g_video_cb);
+
+        dvr_command_running = true;
+        dvr_command_thread = std::thread(dvr_command_loop, kDvrControlPort);
 
         spdlog::info("GST RTP Receiver is running. Press Ctrl-C to stop...");
 
@@ -372,6 +448,11 @@ int main(int argc, char *argv[])
     if (g_dvr)
     {
         g_dvr->shutdown();
+    }
+    if (g_audio)
+    {
+        g_audio->stop();
+        g_audio.reset();
     }
     aml_cleanup();
     return 0;
