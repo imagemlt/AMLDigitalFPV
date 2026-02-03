@@ -48,7 +48,7 @@ make clean      # 清理 build/ 与可执行文件
 | `-t <type>`   | `0` | 编码类型：`0` = H265，`1` = H264。 |
 | `-d <mode>`   | `0` | 码流类型：`0` = frame，`1` = ES video。 |
 | `-l <level>`  | `4` | 解码缓冲等级（传给 `aml_setup`）。 |
-| `-a <0|1>`    | `0` | 启用音频：`1` 时使用 appsrc UDP 读包并解码 Opus payload `98`。 |
+| `-a <0,1>`    | `0` | 启用音频：`1` 时使用 appsrc UDP 读包并解码 Opus payload `98`。 |
 
 录像默认关闭，需要向 UDP 端口 `5612` 发送指令：
 - `record=1`：开始录制。

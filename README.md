@@ -48,7 +48,7 @@ Edit `CMakeLists.txt` or `Makefile` to tweak sources/flags. Outputs live in `bui
 | `-t <type>`   | `0` | Codec: `0` = H265, `1` = H264. |
 | `-d <mode>`   | `0` | Stream type: `0` = frame, `1` = ES video. |
 | `-l <level>`  | `4` | Decoder buffer level (passed to `aml_setup`). |
-| `-a <0|1>`    | `0` | Enable audio: when `1`, use appsrc UDP reader and decode Opus payload `98`. |
+| `-a <0,1>`    | `0` | Enable audio: when `1`, use appsrc UDP reader and decode Opus payload `98`. |
 
 Recording remains off until a UDP command arrives on port `5612`:
 - `record=1` – start writing MP4.
