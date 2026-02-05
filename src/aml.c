@@ -230,7 +230,7 @@ int aml_setup(int videoFormat, int width, int height, int redrawRate, void *cont
   codecParam.am_sysinfo.param = (void *)((size_t)codecParam.am_sysinfo.param | SYNC_OUTSIDE);
 
   codecParam.vbuf_size = width * height * bufLevel;
-  spdlog_info("calibrated buf level to %d -> %d",bufLevel,codecParam.vbuf_size);
+  spdlog_info("calibrated buf level to %d -> %d", bufLevel, codecParam.vbuf_size);
   int ret;
 
   if ((ret = codec_init(&codecParam)) != 0)
@@ -292,7 +292,7 @@ int aml_setup(int videoFormat, int width, int height, int redrawRate, void *cont
   write_sysfs("/sys/class/video/pip_pre_hscaler_ntap_en", "0\n");
 
   /* HDMI /sys/class/amhdmitx/amhdmitx0/ */
-  write_sysfs("/sys/class/amhdmitx/amhdmitx0/attr", "rgb\n"); // 或 "rgb"
+  // write_sysfs("/sys/class/amhdmitx/amhdmitx0/attr", "rgb\n"); // 或 "rgb"
   write_sysfs("/sys/class/amhdmitx/amhdmitx0/frac_rate_policy", "0\n");
   write_sysfs("/sys/class/amhdmitx/amhdmitx0/allm_mode", "1\n");
   write_sysfs("/sys/class/amhdmitx/amhdmitx0/contenttype_mode", "1\n");
