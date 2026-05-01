@@ -115,7 +115,7 @@ void *aml_display_thread(void *unused)
   return NULL;
 }
 
-int aml_setup(int videoFormat, int width, int height, int redrawRate, void *context, int drFlags, int framePath, int streamType, int bufLevel)
+int aml_setup(int videoFormat, int width, int height, int redrawRate, void *context, int drFlags, int framePath, int streamType, int bufLevel, int decMode)
 {
   codecParam.handle = -1;
   codecParam.cntl_handle = -1;
@@ -143,8 +143,16 @@ int aml_setup(int videoFormat, int width, int height, int redrawRate, void *cont
   // minimal vfm map
   // system("echo 'add vdec-map-0 vdec.h265.00 amvideo' >/sys/class/vfm/map");
   // #ifdef STREAM_TYPE_FRAME
-  codecParam.dec_mode = STREAM_TYPE_FRAME;
-  spdlog_info("Using FRAME mode");
+  if (decMode == 1)
+  {
+    codecParam.dec_mode = STREAM_TYPE_FRAME;
+    spdlog_info("Using dec_mode FRAME");
+  }
+  else
+  {
+    codecParam.dec_mode = STREAM_TYPE_STREAM;
+    spdlog_info("Using dec_mode STREAM");
+  }
   // #endif
 
   // #ifdef FRAME_BASE_PATH_AMLVIDEO_AMVIDEO

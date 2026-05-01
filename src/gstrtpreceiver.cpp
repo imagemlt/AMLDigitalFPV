@@ -61,13 +61,14 @@ namespace pipeline
         assert(false);
         return "";
     }
-    static std::string create_out_caps(const VideoCodec &codec)
+    static std::string create_out_caps(const VideoCodec &codec, int alignment)
     {
+        const char *align_str = (alignment == 1) ? "nal" : "au";
         if (codec == VideoCodec::H264)
         {
             std::stringstream ss;
             ss << "video/x-h264";
-            ss << ", stream-format=\"byte-stream\",alignment=nal";
+            ss << ", stream-format=\"byte-stream\",alignment=" << align_str;
             // ss<<", alignment=\"nal\"";
             ss << " ! ";
             return ss.str();
@@ -76,8 +77,7 @@ namespace pipeline
         {
             std::stringstream ss;
             ss << "video/x-h265";
-            ss << ", stream-format=\"byte-stream\"";
-            // ss << ", alignment=\"au\"";
+            ss << ", stream-format=\"byte-stream\",alignment=" << align_str;
             ss << " ! ";
             return ss.str();
         }
@@ -264,7 +264,7 @@ std::string GstRtpReceiver::construct_gstreamer_pipeline()
         ss << "appsrc name=appsrc " << pipeline::gst_create_rtp_caps(m_video_codec) << " ! ";
     ss << pipeline::create_rtp_depacketize_for_codec(m_video_codec);
     ss << pipeline::create_parse_for_codec(m_video_codec);
-    ss << pipeline::create_out_caps(m_video_codec);
+    ss << pipeline::create_out_caps(m_video_codec, m_alignment);
     ss << " appsink drop=true name=out_appsink";
     return ss.str();
 }
@@ -277,6 +277,11 @@ void GstRtpReceiver::set_udp_appsrc(bool enable)
 void GstRtpReceiver::set_audio_payload_callback(AUDIO_PAYLOAD_CALLBACK cb)
 {
     m_audio_cb = std::move(cb);
+}
+
+void GstRtpReceiver::set_alignment(int alignment)
+{
+    m_alignment = alignment;
 }
 
 void GstRtpReceiver::loop_pull_samples()
@@ -468,7 +473,7 @@ std::string GstRtpReceiver::construct_file_playback_pipeline(const char *file_pa
     std::stringstream ss;
     ss << "filesrc location=" << file_path << " ! qtdemux ! ";
     ss << pipeline::create_parse_for_codec(m_video_codec);
-    ss << pipeline::create_out_caps(m_video_codec);
+    ss << pipeline::create_out_caps(m_video_codec, m_alignment);
     ss << " appsink drop=true name=out_appsink";
     return ss.str();
 }

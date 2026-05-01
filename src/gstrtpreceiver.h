@@ -60,6 +60,7 @@ public:
     void switch_to_stream();
     void set_udp_appsrc(bool enable);
     void set_audio_payload_callback(AUDIO_PAYLOAD_CALLBACK cb);
+    void set_alignment(int alignment);
     void fast_forward(double rate = 2.0);
     void fast_rewind(double rate = 2.0);
     void skip_duration(int64_t skip_ms);
@@ -87,6 +88,7 @@ private:
     int sock = -1;
     bool m_udp_appsrc = false;
     bool m_read_socket_run = false;
+    int m_alignment = 0; // 0: au, 1: nal
     std::unique_ptr<std::thread> m_read_socket_thread;
 
     // dvr

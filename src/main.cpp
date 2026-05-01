@@ -38,9 +38,11 @@ struct CmdOptions
     std::string dvr_path; // if empty, auto path
     int frame_path = 1;   // 1 presents AMVIDEO, 0 presents AMLVIDEO_AMVIDEO (for amlvideo v4l2 pipeline)
     int type = 0;         // 0: H265, 1: H264
-    int stream_type = 0;  // 0: frame, 1: es video
-	int bufLevel = 4;// vbuf level from 1 to 64 
+    int stream_type = 0;  // 0: es video, 1: frame
+    int bufLevel = 4;// vbuf level from 1 to 64
     int enable_audio = 0; // enable UDP appsrc + RTP payload filter for audio present
+    int alignment = 0;    // 0: au (default), 1: nal
+    int dec_mode = 1;     // 0: STREAM_TYPE_STREAM, 1: STREAM_TYPE_FRAME (default)
 };
 
 int signal_flag = 0;
@@ -229,7 +231,7 @@ int main(int argc, char *argv[])
 {
     // parse args via getopt: -w width -h height -p fps -s path
     int opt;
-    while ((opt = getopt(argc, argv, "w:h:p:s:f:t:d:l:a:")) != -1)
+    while ((opt = getopt(argc, argv, "w:h:p:s:f:t:d:l:a:g:m:")) != -1)
     {
         switch (opt)
         {
@@ -263,6 +265,12 @@ int main(int argc, char *argv[])
         case 'a':
             g_opts.enable_audio = std::atoi(optarg);
             break;
+        case 'g':
+            g_opts.alignment = std::atoi(optarg);
+            break;
+        case 'm':
+            g_opts.dec_mode = std::atoi(optarg);
+            break;
         default:
             // ignore unknown options for now
             break;
@@ -278,10 +286,11 @@ int main(int argc, char *argv[])
     // Initialize AML library
     try
     {
-        aml_setup(g_opts.type, g_opts.width, g_opts.height, g_opts.fps, NULL, 0, g_opts.frame_path, g_opts.stream_type, g_opts.bufLevel);
+        aml_setup(g_opts.type, g_opts.width, g_opts.height, g_opts.fps, NULL, 0, g_opts.frame_path, g_opts.stream_type, g_opts.bufLevel, g_opts.dec_mode);
         const auto selected_codec = g_opts.type == 0 ? VideoCodec::H265 : VideoCodec::H264;
         receiver = std::make_unique<GstRtpReceiver>(5600, selected_codec);
         receiver->set_udp_appsrc(g_opts.enable_audio != 0);
+        receiver->set_alignment(g_opts.alignment);
         if (g_opts.enable_audio)
         {
             g_audio_enabled.store(true);
