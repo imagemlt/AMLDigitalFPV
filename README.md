@@ -49,6 +49,8 @@ Edit `CMakeLists.txt` or `Makefile` to tweak sources/flags. Outputs live in `bui
 | `-d <mode>`   | `0` | Stream type: `0` = frame, `1` = ES video. |
 | `-l <level>`  | `4` | Decoder buffer level (passed to `aml_setup`). |
 | `-a <0,1>`    | `0` | Enable audio: when `1`, use appsrc UDP reader and decode Opus payload `98`. |
+| `-g <alignment>` | `0` | RTP/H265 alignment passed to the receiver: `0` = AU, `1` = NAL. |
+| `-m <mode>`   | `1` | Amlogic decoder input mode passed to `aml_setup`: `0` = stream, `1` = frame. |
 
 Recording remains off until a UDP command arrives on port `5612`:
 - `record=1` – start writing MP4.
