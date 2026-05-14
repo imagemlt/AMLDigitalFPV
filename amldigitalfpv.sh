@@ -7,6 +7,9 @@ else
 	. /flash/wfb.conf
 fi
 
+alignment=${alignment:-0}
+dec_mode=${dec_mode:-1}
+
 if [ -f /storage/streamer/AMLDigitalFPV.new ]; then
 	mv /storage/streamer/AMLDigitalFPV.new /storage/streamer/AMLDigitalFPV
 fi
@@ -35,4 +38,4 @@ else
 	echo "[+]Error policy: Drop FRAME"
 fi
 
-/storage/streamer/AMLDigitalFPV -w ${video_width} -h ${video_height} -p 120 -a ${sound} -l ${buf_level}
+/storage/streamer/AMLDigitalFPV -w ${video_width} -h ${video_height} -p 120 -a ${sound} -l ${buf_level} -g ${alignment} -m ${dec_mode}
